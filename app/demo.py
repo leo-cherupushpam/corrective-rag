@@ -289,7 +289,7 @@ with tab1:
         st.divider()
         st.subheader(f"📝 Query: *{query}*")
 
-        # Side-by-side answers
+        # Comparison view
         col_b, col_c = st.columns(2, gap="large")
 
         with col_b:
@@ -297,53 +297,27 @@ with tab1:
                 st.markdown("### 📄 Baseline RAG")
                 st.markdown(f"{b_trace.answer}")
                 st.divider()
-                st.caption(f"**LLM calls:** {b_trace.total_llm_calls}  |  **Docs used:** {len(b_trace.docs_used)}")
-
-                # v1.5: Show baseline confidence
-                if b_trace.answer_confidence > 0:
-                    confidence_pct = b_trace.answer_confidence * 100
-                    if b_trace.answer_confidence > 0.7:
-                        badge = "🟢 High confidence"
-                    elif b_trace.answer_confidence > 0.4:
-                        badge = "🟡 Medium confidence"
-                    else:
-                        badge = "🔴 Low confidence"
-                    st.caption(f"**{badge}** ({confidence_pct:.0f}%)")
-                    if b_trace.confidence_reasoning:
-                        st.caption(f"_{b_trace.confidence_reasoning}_")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.caption(f"Calls: {b_trace.total_llm_calls} | Docs: {len(b_trace.docs_used)}")
+                with col2:
+                    conf_pct = b_trace.answer_confidence * 100 if b_trace.answer_confidence > 0 else 0
+                    badge = "🟢" if b_trace.answer_confidence > 0.7 else "🟡" if b_trace.answer_confidence > 0.4 else "🔴"
+                    st.caption(f"{badge} {conf_pct:.0f}% confidence")
 
         with col_c:
             status_icon = "✅" if not c_trace.fallback_used else "⚠️"
-            status_text = "Answered with sources" if not c_trace.fallback_used else "Fallback (no docs)"
-
             with st.container(border=True):
                 st.markdown("### 🛡️ CRAG (Corrective)")
                 st.markdown(f"{c_trace.answer}")
                 st.divider()
-
-                col_meta1, col_meta2 = st.columns([1, 1])
-                with col_meta1:
-                    st.caption(f"**LLM calls:** {c_trace.total_llm_calls}")
-                    st.caption(f"**Docs used:** {len(c_trace.docs_used)}")
-                with col_meta2:
-                    st.caption(f"{status_icon} {status_text}")
-                    if c_trace.needed_correction:
-                        st.caption(f"🔄 {len(c_trace.corrections)} correction(s)")
-                    else:
-                        st.caption("✓ Passed grade immediately")
-
-                # v1.5: Show CRAG confidence with reasoning
-                if c_trace.answer_confidence > 0:
-                    confidence_pct = c_trace.answer_confidence * 100
-                    if c_trace.answer_confidence > 0.7:
-                        badge = "🟢 High confidence"
-                    elif c_trace.answer_confidence > 0.4:
-                        badge = "🟡 Medium confidence"
-                    else:
-                        badge = "🔴 Low confidence"
-                    st.markdown(f"**{badge}** ({confidence_pct:.0f}%)")
-                    if c_trace.confidence_reasoning:
-                        st.caption(f"_{c_trace.confidence_reasoning}_")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.caption(f"Calls: {c_trace.total_llm_calls} | Docs: {len(c_trace.docs_used)}")
+                with col2:
+                    conf_pct = c_trace.answer_confidence * 100 if c_trace.answer_confidence > 0 else 0
+                    badge = "🟢" if c_trace.answer_confidence > 0.7 else "🟡" if c_trace.answer_confidence > 0.4 else "🔴"
+                    st.caption(f"{badge} {conf_pct:.0f}% confidence")
 
         st.divider()
 
@@ -442,98 +416,37 @@ with tab1:
             st.metric("Cost Overhead", f"+{cost_delta_pct:.0f}%",
                      help=f"Extra cost for {extra_calls} additional LLM calls (grader + corrector)")
 
-        # Cost explanation (Phase 6: Cost Transparency)
-        with st.expander("💡 Why does CRAG cost more? (Cost Breakdown)"):
-            st.markdown("""
-### Cost Tradeoff Explained
-
-**Baseline RAG** (simple pipeline):
-- 1 embedding call (retrieval)
-- 1 generation call
-- **Total:** ~0.15¢ per query
-
-**CRAG** (with quality gate + correction):
-- 1 embedding call (retrieval)
-- 5 grading calls (one per retrieved doc)
-- 0–2 correction attempts (if needed)
-- 1 generation call
-- **Total:** ~0.45¢ per query (+200%)
-
-### Is It Worth It?
-
-**CRAG costs 0.3¢ extra** but **prevents ~75% of hallucinations**
-
-| Use Case | Hallucination Cost | CRAG Worthwhile? |
-|---|---|---|
-| **Customer Support** | $10–50 per issue | ✅ Absolutely |
-| **Financial/Legal** | $100–1000+ | ✅ Essential |
-| **FAQ/Public Data** | $0.01–0.05 | ❌ Marginal |
-
-**Bottom Line:** If a prevented hallucination saves you >$0.005, CRAG pays for itself.
-See the **Observability** tab for detailed cost breakdowns and ROI analysis.
-            """)
-
-        # Cost breakdown by component (v1.5)
-        if c_trace.cost_breakdown:
-            st.divider()
-            st.markdown("**Cost Breakdown by Component:**")
-            cost_by_component = {}
-            for cb in c_trace.cost_breakdown:
-                # Map model names to readable labels
-                label = {
-                    "gpt-5-nano-2025-08-07": "Generator",
-                    "gpt-4o-mini-2024-07-18": "Grader",
-                    "text-embedding-3-small": "Embeddings"
-                }.get(cb.model, cb.model)
-                cost_by_component[label] = cost_by_component.get(label, 0) + cb.cost_usd
-
-            col1, col2, col3 = st.columns(3)
-            col_idx = 0
-            for label, cost in sorted(cost_by_component.items()):
-                cols = [col1, col2, col3]
-                with cols[col_idx % 3]:
-                    pct_of_total = (cost / c_trace.total_cost_usd * 100) if c_trace.total_cost_usd > 0 else 0
-                    st.caption(f"**{label}**: {format_cost(cost)} ({pct_of_total:.0f}%)")
-                col_idx += 1
-
-        # Cost-benefit analysis (v1.5)
+        # Cost & Impact (simplified)
         st.divider()
-        st.markdown("### 📊 Cost-Benefit Summary")
+        st.markdown("### 💡 Cost & Impact")
+        col_impact1, col_impact2 = st.columns(2)
 
-        # Assume baseline caught 0 issues, CRAG caught some (inference from quality gate)
-        quality_improvement_pct = (extra_calls / 2) * 10  # Rough heuristic
-        baseline_quality = 0  # Baseline has no quality gate
-        crag_quality = min(95, 60 + quality_improvement_pct)  # Estimate confidence-based quality
+        with col_impact1:
+            st.markdown("**✅ Quality Gain**")
+            improvement_pct = (c_trace.answer_confidence - b_trace.answer_confidence) * 100
+            st.caption(f"Confidence improvement: **+{improvement_pct:.0f}%**")
+            st.caption(f"Prevents ~75% of hallucinations")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**🎯 Quality Improvement**")
-            st.caption(f"CRAG Confidence: {c_trace.answer_confidence:.0%}")
-            st.caption(f"Baseline Confidence: {b_trace.answer_confidence:.0%}")
-            st.caption(f"Improvement: +{(c_trace.answer_confidence - b_trace.answer_confidence):.0%}")
+        with col_impact2:
+            st.markdown("**💰 Cost Tradeoff**")
+            st.caption(f"Extra cost: **{format_cost(cost_delta)}/query** (+{cost_delta_pct:.0f}%)")
+            st.caption(f"Worth it if prevented hallucinations save >$0.005")
 
-        with col2:
-            st.markdown("**💰 Cost Analysis**")
-            st.caption(f"Baseline: {format_cost(b_trace.total_cost_usd)}/query")
-            st.caption(f"CRAG: {format_cost(c_trace.total_cost_usd)}/query")
-            st.caption(f"Overhead: {format_cost(cost_delta)}/query")
+        # Optional: show cost breakdown if available
+        if c_trace.cost_breakdown:
+            with st.expander("📊 Cost breakdown by component"):
+                cost_by_component = {}
+                for cb in c_trace.cost_breakdown:
+                    label = {
+                        "gpt-5-nano-2025-08-07": "Generator",
+                        "gpt-4o-mini-2024-07-18": "Grader",
+                        "text-embedding-3-small": "Embeddings"
+                    }.get(cb.model, cb.model)
+                    cost_by_component[label] = cost_by_component.get(label, 0) + cb.cost_usd
 
-        # Monthly/annual projection
-        monthly_queries = 250 * 1000  # Assume 1000 queries per day, 250 business days
-        annual_queries = monthly_queries * 12
-        annual_overhead = cost_delta * annual_queries
-
-        st.markdown("**📈 At Scale (1K queries/day)**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Monthly Cost", f"${(b_trace.total_cost_usd * monthly_queries):.0f}",
-                     help="Baseline RAG")
-        with col2:
-            st.metric("CRAG Cost", f"${(c_trace.total_cost_usd * monthly_queries):.0f}",
-                     delta=f"+${(cost_delta * monthly_queries):.0f}" if cost_delta > 0 else f"${abs(cost_delta * monthly_queries):.0f}")
-        with col3:
-            st.metric("Annual Overhead", f"${annual_overhead:.0f}",
-                     help=f"Extra cost to achieve {c_trace.answer_confidence:.0%} confidence")
+                for label, cost in sorted(cost_by_component.items()):
+                    pct = (cost / c_trace.total_cost_usd * 100) if c_trace.total_cost_usd > 0 else 0
+                    st.caption(f"**{label}**: {format_cost(cost)} ({pct:.0f}%)")
 
         # ROI/Value Proposition (v1.5)
         with st.expander("💡 Is CRAG Worth It? (ROI Analysis)", expanded=False):
@@ -672,95 +585,39 @@ To generate benchmark results (hallucination rates, cost analysis, etc.):
                      prevented,
                      help=f"Out of {summary['total_questions']} questions")
 
-        # Cost-benefit explanation
-        with st.expander("📊 Cost-Benefit Analysis"):
+        # Cost-benefit summary (collapsed to avoid clutter)
+        with st.expander("💡 Cost-Benefit Details"):
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("**✅ What CRAG Achieves**")
-                st.markdown(f"""
-- **Hallucination Rate:** {summary['crag_hallucination_rate']}% (down from {summary['baseline_hallucination_rate']}%)
-- **Reduction:** {summary['hallucination_reduction_pct']}% fewer hallucinations
-- **Prevented:** {prevented} mistakes out of {summary['total_questions']} questions
-- **Cost Overhead:** +{summary['cost_delta_pct']:.0f}% per query
-                """)
+                st.markdown("**Results**")
+                st.caption(f"✅ **{summary['hallucination_reduction_pct']:.0f}%** fewer hallucinations")
+                st.caption(f"✅ **{prevented}** mistakes prevented")
             with col2:
-                st.markdown("**💰 When CRAG Pays for Itself**")
-                st.markdown(f"""
-Cost per prevented hallucination: ~{format_cost(summary['cost_delta_usd'] / max(prevented, 1))}
-
-**CRAG is worth it if each prevented hallucination saves >$0.001**
-
-Examples:
-- Customer refund: $5–50 ✅
-- Support escalation: $10–100 ✅
-- Brand reputation: Hard to quantify, but valuable ✅
-                """)
+                st.markdown("**Cost Impact**")
+                cost_per_prevented = summary['cost_delta_usd'] / max(prevented, 1)
+                st.caption(f"💰 **{format_cost(cost_per_prevented)}** per prevented hallucination")
+                st.caption(f"✅ Worth it if savings >$0.001 each")
 
         st.divider()
 
-        # Per-question breakdown
-        st.subheader("Per-Question Breakdown")
-        for idx, r in enumerate(eval_data["per_question"], 1):
-            b_icon = "❌" if r["baseline_hallucinated"] else "✅"
-            c_icon = "❌" if r["crag_hallucinated"] else "✅"
-            corr_note = " 🔄" if r["crag_needed_correction"] else ""
-            fb_note = " ⚠️" if r["crag_fallback"] else ""
+        # Per-question breakdown (collapsed by default)
+        with st.expander("📋 Per-Question Details", expanded=False):
+            st.caption("Click any question to see the answer comparison")
+            for idx, r in enumerate(eval_data["per_question"], 1):
+                b_icon = "✅" if not r["baseline_hallucinated"] else "❌"
+                c_icon = "✅" if not r["crag_hallucinated"] else "❌"
+                corr_note = " 🔄" if r["crag_needed_correction"] else ""
+                fb_note = " ⚠️" if r["crag_fallback"] else ""
 
-            header = f"{b_icon} {c_icon} Q{idx}: {r['question'][:60]}{corr_note}{fb_note}"
-            with st.expander(header):
-                col_b, col_c = st.columns(2)
-                with col_b:
-                    with st.container(border=True):
-                        st.markdown("**📄 Baseline**")
+                header = f"{b_icon} {c_icon} Q{idx}: {r['question']}"
+                with st.expander(header, expanded=False):
+                    col_b, col_c = st.columns(2)
+                    with col_b:
+                        st.markdown("**Baseline**")
                         st.markdown(f"_{r['baseline_answer']}_")
-                        status = "✅ Correct" if not r["baseline_hallucinated"] else "❌ Hallucinated"
-                        st.caption(status)
-                with col_c:
-                    with st.container(border=True):
-                        st.markdown("**🛡️ CRAG**")
+                    with col_c:
+                        st.markdown("**CRAG**")
                         st.markdown(f"_{r['crag_answer']}_")
-                        status = "✅ Correct" if not r["crag_hallucinated"] else "❌ Hallucinated"
-                        st.caption(status)
-
-        # Cost breakdown by question (v1.5)
-        st.divider()
-        st.subheader("💰 Cost Breakdown by Question")
-
-        # Extract cost data from per-question results
-        cost_data = {}
-        for idx, r in enumerate(eval_data["per_question"], 1):
-            q_label = f"Q{idx}"
-            crag_cost = r.get("crag_cost_usd", 0)
-            cost_data[q_label] = crag_cost
-
-        if cost_data:
-            st.bar_chart(cost_data)
-
-            # Add analysis
-            max_cost_q = max(cost_data, key=cost_data.get)
-            min_cost_q = min(cost_data, key=cost_data.get)
-            max_cost_val = cost_data[max_cost_q]
-            min_cost_val = cost_data[min_cost_q]
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Most Expensive", max_cost_q,
-                         help=f"{max_cost_q} cost {format_cost(max_cost_val)}")
-            with col2:
-                st.metric("Least Expensive", min_cost_q,
-                         help=f"{min_cost_q} cost {format_cost(min_cost_val)}")
-            with col3:
-                avg_cost = mean(cost_data.values()) if cost_data else 0
-                st.metric("Average Cost", format_cost(avg_cost))
-
-            # Explanation
-            st.caption(
-                "📌 **Why costs vary:** Questions requiring correction strategies (🔄) or fallback (⚠️) "
-                "cost more because the system tries multiple retrieval approaches. "
-                "See per-question details above for correction attempts."
-            )
-        else:
-            st.info("Cost data not available in evaluation results.")
 
     else:
         st.info(
@@ -775,105 +632,93 @@ Examples:
 with tab3:
     st.header("⚙️ How CRAG Works")
 
-    st.markdown("""
-### The Problem with Standard RAG
+    # Problem section
+    st.subheader("🔴 The Problem with Standard RAG")
+    st.markdown("Standard RAG retrieves documents and generates answers, but **doesn't verify relevance**.")
+    st.info("❌ **Hallucination:** When retrieval fails, the LLM confidently invents answers that sound right but are wrong.")
+    st.markdown("**Example:**")
+    st.code("Query: 'What's your return policy?'\nRetriever: [doc about shipping]\nGenerator: 'Returns accepted within 45 days' ← MADE UP ❌")
 
-Standard RAG retrieves documents and passes them to the LLM regardless of relevance.
-When retrieval fails, the LLM **hallucinates with confidence**.
+    st.divider()
 
-```
-Query: "What's your return policy?"
-Retriever: [doc about shipping] ← wrong doc
-Generator: "Returns are accepted within 45 days" ← MADE UP ❌
-```
+    # Solution section
+    st.subheader("🟢 The CRAG Solution")
+    st.markdown("**Add a quality gate:** Grade each retrieved document BEFORE generating an answer.")
+    st.markdown("If a document fails the grade, try different retrieval strategies instead of hallucinating.")
+    st.code("Query 'What's your return policy?'\n  ↓ Retrieve → Grade ❌ (wrong doc) → Correct → Retrieve ✓ → Generate\n  └─ [shipping doc] ─→ NO (0.1) ──→ Expand query → [return policy doc] → YES (0.9)")
 
----
+    st.divider()
 
-### The CRAG Solution
+    # How it works
+    st.subheader("⚙️ The CRAG Pipeline")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**1️⃣ Retrieve**")
+        st.caption("Get top-k documents from vector store or keyword search")
+    with col2:
+        st.markdown("**2️⃣ Grade**")
+        st.caption("LLM evaluates: 'Is this document relevant?'")
+    with col3:
+        st.markdown("**3️⃣ Decide**")
+        st.caption("✓ Use if relevant, ✗ Correct if not")
 
-```
-Query: "What's your return policy?"
-  ↓
-[1] Retrieve: [doc about shipping]
-  ↓
-[2] Grade: "Is this doc relevant?" → NO (score: 0.1)
-  ↓
-[3] Correct: Expand query → "product return refund policy"
-  ↓
-[1] Retrieve again: [return policy doc] ✓
-  ↓
-[2] Grade: "Is this relevant?" → YES (score: 0.9)
-  ↓
-[4] Generate: "Returns accepted within 30 days..." [Doc 1] ✓
-```
+    st.markdown("")  # spacing
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**🔄 Correct**")
+        st.caption("Try different query formulations (expand, decompose, keywords)")
+    with col2:
+        st.markdown("**4️⃣ Generate**")
+        st.caption("Create answer from graded documents or fallback")
+    with col3:
+        st.markdown("**📝 Cite**")
+        st.caption("Always include sources or say 'I don't know'")
 
----
+    st.divider()
 
-### Grader Agent
+    # Detailed sections
+    st.subheader("🔍 Grader Agent")
+    st.markdown("An LLM call that evaluates document relevance for each query.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Input**")
+        st.code("(query, document)")
+    with col2:
+        st.markdown("**Output**")
+        st.code("{relevant: bool\n score: 0–1\n reason: str}")
 
-The grader is an LLM call (gpt-4o-mini) that evaluates:
-- **Input:** (query, document)
-- **Output:** `{relevant: bool, score: 0–1, reason: str}`
+    st.divider()
 
-Binary output keeps routing logic simple. Score gives observability.
+    st.subheader("🔧 Correction Strategies")
+    st.markdown("When initial retrieval fails the grade gate, CRAG tries these in order:")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**1. Expand**")
+        st.caption("Reword query with broader or different terminology")
+    with col2:
+        st.markdown("**2. Decompose**")
+        st.caption("Break complex query into simpler sub-questions")
+    with col3:
+        st.markdown("**3. Keywords**")
+        st.caption("Extract key terms for sparse (BM25) search")
 
----
+    st.divider()
 
-### Correction Strategies
+    st.subheader("💚 Fallback Mode")
+    st.info("🚨 If all corrections fail: CRAG returns 'I don't have enough information' instead of inventing an answer. This builds user trust.")
 
-| Strategy | When Used | What It Does |
-|---|---|---|
-| **Query expansion** | First failure | Rewrite query with broader/different terminology |
-| **Decomposition** | Second failure | Break complex query into simpler sub-queries |
-| **Keyword fallback** | Third failure | Extract keywords for BM25-style sparse search |
+    st.divider()
 
----
+    st.subheader("💰 Cost & Value")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Component Costs**")
+        st.markdown("- **Generator:** Creates answers (~1 call)\n- **Grader:** Evaluates docs (~5 calls)\n- **Corrector:** Reformulates (~0–2 calls)")
+    with col2:
+        st.markdown("**Cost Impact**")
+        st.markdown("- **Baseline RAG:** $0.0001/query\n- **CRAG:** $0.0006/query\n- **Overhead:** +400% for 75% fewer hallucinations")
 
-### Fallback
-
-If all corrections fail:
-- CRAG returns "I don't have enough information"
-- Never invents an answer
-- This is the key trust-building feature
-
----
-
-### Cost Model
-
-**What you pay for:**
-- **Generator:** gpt-5-nano ($0.05–0.40 per 1M tokens) — creates answers
-- **Grader:** gpt-4o-mini ($0.15–0.60 per 1M tokens) — evaluates relevance (5 docs per query)
-- **Corrector:** gpt-4o-mini ($0.15–0.60 per 1M tokens) — reformulates queries (on demand)
-
-**Typical Cost**
-- Standard RAG: $0.000128/query (1 generation call)
-- CRAG: $0.000572/query (5 grader calls + 1 generation)
-- Overhead: +$0.000444/query (+346%)
-
-### Cost Tradeoff (Why 346% More Is Worth It)
-
-| Path | Extra LLM calls | When |
-|---|---|---|
-| Docs pass grade immediately | +1 (grader) | ~70% of queries |
-| One correction needed | +2–3 (grader + corrector) | ~20% of queries |
-| Fallback | +4–5 (all strategies) | ~10% of queries |
-
-**At 1,000 queries/month:**
-- Baseline RAG: $0.13/month + 15–20% hallucinations (150–200 errors)
-- CRAG: $0.58/month + <5% hallucinations (10–25 errors)
-- Cost overhead: +$0.45/month for 75% fewer hallucinations
-
-**Break-even point:** If each prevented hallucination saves your business >$0.003 (refunds, escalations, reputation), CRAG is profitable.
-
-### Model Optimization
-
-Grader models have different cost/accuracy tradeoffs:
-- **gpt-5-nano:** $0.000380/query (70% cheaper, 12.5% hallucination)
-- **gpt-4.1-nano:** $0.000450/query (21% cheaper, 10% hallucination)
-- **gpt-4o-mini:** $0.000572/query (highest accuracy, 8% hallucination)
-
-Run `python cost_analysis.py` to find the best tradeoff for your workload.
-""")
+    st.markdown("**Verdict:** Worth it if each prevented hallucination saves >$0.001. True for most customer-facing applications.")
 
 # ---------------------------------------------------------------------------
 # TAB 4: Observability Dashboard (v1.5)
@@ -921,60 +766,41 @@ with tab4:
                     costs[model] = costs.get(model, 0) + cb.cost_usd
         return costs
 
-    # === REAL-TIME METRICS ===
-    st.subheader("🟢 Real-Time Session Metrics")
-
-    # Session KPIs
+    # === SESSION & BATCH METRICS ===
     session_traces = st.session_state.query_history
+    eval_path = os.path.join(os.path.dirname(__file__), "eval_results.json")
+
+    # Row 1: Session metrics
+    st.subheader("📊 Key Metrics")
     if session_traces:
-        col1, col2, col3, col4 = st.columns(4)
-
+        col1, col2, col3 = st.columns(3)
         with col1:
-            num_queries = len(session_traces)
-            st.metric("Queries Run", num_queries)
-
+            st.metric("Queries (Session)", len(session_traces))
         with col2:
             crag_traces = [t for t in session_traces if hasattr(t, 'mode') and t.mode == "crag"]
-            if crag_traces:
-                avg_confidence = mean([t.answer_confidence for t in crag_traces if hasattr(t, 'answer_confidence')])
-                st.metric("Avg CRAG Confidence", f"{avg_confidence:.0%}")
-            else:
-                st.metric("Avg CRAG Confidence", "N/A")
-
-        with col3:
-            hallucinations = sum(1 for t in crag_traces if hasattr(t, 'fallback_used') and t.fallback_used)
-            st.metric("Fallback Cases", hallucinations)
-
-        with col4:
             total_cost = sum(t.total_cost_usd for t in session_traces if hasattr(t, 'total_cost_usd'))
-            st.metric("Total Cost (Session)", format_cost(total_cost))
+            st.metric("Session Cost", format_cost(total_cost))
+        with col3:
+            fallbacks = sum(1 for t in crag_traces if hasattr(t, 'fallback_used') and t.fallback_used)
+            st.metric("Fallbacks", fallbacks)
     else:
-        st.info("🔵 Run some queries in the 'Try It' tab to see real-time metrics here")
+        st.info("💡 Run queries in 'Try It' tab to see session metrics")
 
-    st.divider()
-
-    # === BATCH METRICS ===
-    st.subheader("📊 Batch Evaluation Metrics")
-
-    eval_path = os.path.join(os.path.dirname(__file__), "eval_results.json")
+    # Row 2: Batch evaluation metrics
     if os.path.exists(eval_path):
         with open(eval_path) as f:
             eval_data = json.load(f)
 
         summary = eval_data["summary"]
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Questions", summary["total_questions"])
-        with col2:
             st.metric("Hallucination Reduction", f"{summary['hallucination_reduction_pct']:.0f}%")
+        with col2:
+            prevented = summary['baseline_hallucinations'] - summary['crag_hallucinations']
+            st.metric("Prevented", prevented)
         with col3:
-            st.metric("Avg CRAG Confidence", f"{summary['avg_crag_answer_confidence']:.2f}")
-        with col4:
-            st.metric("Cost Overhead", f"{summary['cost_delta_pct']:+.0f}%",
-                     help=f"CRAG: {format_cost(summary['avg_crag_cost_per_query'])}/query vs Baseline: {format_cost(summary['avg_baseline_cost_per_query'])}/query")
-
-        st.divider()
+            st.metric("Cost Overhead", f"+{summary['cost_delta_pct']:.0f}%")
 
         # === VISUALIZATIONS ===
         st.subheader("📉 System Visualizations")
