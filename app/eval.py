@@ -26,6 +26,7 @@ import os
 import time
 
 from crag import VectorStore, baseline_rag, crag
+from costs import format_cost  # v1.5: cost formatting
 
 # ---------------------------------------------------------------------------
 # Test knowledge base: company FAQ documents
@@ -185,6 +186,8 @@ def run_evaluation():
     crag_corrections = 0
     crag_fallbacks = 0
     total_extra_calls = 0
+    total_baseline_cost = 0  # v1.5: cost tracking
+    total_crag_cost = 0      # v1.5: cost tracking
 
     for i, tc in enumerate(TEST_CASES):
         q = tc["question"]
@@ -212,6 +215,10 @@ def run_evaluation():
             crag_fallbacks += 1
         total_extra_calls += c_trace.total_llm_calls - b_trace.total_llm_calls
 
+        # v1.5: Track costs
+        total_baseline_cost += b_trace.total_cost_usd
+        total_crag_cost += c_trace.total_cost_usd
+
         results.append({
             "question": q,
             "answerable": tc["answerable"],
@@ -222,6 +229,8 @@ def run_evaluation():
             "crag_needed_correction": c_trace.needed_correction,
             "crag_fallback": c_trace.fallback_used,
             "extra_llm_calls": c_trace.total_llm_calls - b_trace.total_llm_calls,
+            "baseline_cost_usd": round(b_trace.total_cost_usd, 6),  # v1.5
+            "crag_cost_usd": round(c_trace.total_cost_usd, 6),      # v1.5
         })
 
         status_b = "❌ Hallucinated" if b_score["hallucinated"] else "✅ Correct"
@@ -243,13 +252,19 @@ def run_evaluation():
     print(f"{'Queries needing correction':<35} {'N/A':>10} {crag_corrections:>10}")
     print(f"{'Correction fallback used':<35} {'N/A':>10} {crag_fallbacks:>10}")
     print(f"{'Avg extra LLM calls (CRAG)':<35} {'0':>10} {total_extra_calls/total:>9.1f}")
+    # v1.5: Add cost metrics
+    print(f"{'Total cost':<35} {format_cost(total_baseline_cost):>10} {format_cost(total_crag_cost):>10}")
+    print(f"{'Avg cost per query':<35} {format_cost(total_baseline_cost/total):>10} {format_cost(total_crag_cost/total):>10}")
     print()
 
     reduction = (baseline_hallucinations - crag_hallucinations) / max(baseline_hallucinations, 1) * 100
     print(f"Hallucination reduction: {reduction:.0f}%")
+    cost_delta = total_crag_cost - total_baseline_cost
+    print(f"Cost delta: {format_cost(cost_delta)} ({cost_delta/total_baseline_cost*100:+.0f}%)")
     print()
 
     # Save results to JSON for dashboard
+    # v1.5: Include cost metrics
     with open("eval_results.json", "w") as f:
         json.dump({
             "summary": {
@@ -262,6 +277,13 @@ def run_evaluation():
                 "crag_corrections": crag_corrections,
                 "crag_fallbacks": crag_fallbacks,
                 "avg_extra_llm_calls": round(total_extra_calls / total, 1),
+                # v1.5: Cost metrics
+                "total_baseline_cost_usd": round(total_baseline_cost, 6),
+                "total_crag_cost_usd": round(total_crag_cost, 6),
+                "avg_baseline_cost_per_query": round(total_baseline_cost / total, 6),
+                "avg_crag_cost_per_query": round(total_crag_cost / total, 6),
+                "cost_delta_usd": round(total_crag_cost - total_baseline_cost, 6),
+                "cost_delta_pct": round((total_crag_cost - total_baseline_cost) / total_baseline_cost * 100, 1),
             },
             "per_question": results,
         }, f, indent=2)

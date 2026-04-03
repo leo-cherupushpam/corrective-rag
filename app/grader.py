@@ -8,17 +8,21 @@ Design decisions:
 - Structured output via Pydantic ensures reliable parsing
 - Reason field gives observability into why docs were rejected
 - Runs per-document, not per-batch, so we get granular signals
+- v1.5: Track costs via response.usage
 """
 
 import os
+from typing import Optional, Tuple
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
+from costs import CostBreakdown
+
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-GRADER_MODEL = "gpt-4o-mini"  # Cheaper — grading is simpler than generation
+GRADER_MODEL = "gpt-4o-mini-2024-07-18"  # Cheaper — grading is simpler than generation
 
 
 class GradeResult(BaseModel):
@@ -38,8 +42,13 @@ Return:
 - reason: one sentence explaining your decision"""
 
 
-def grade_document(query: str, document: str) -> GradeResult:
-    """Grade a single document's relevance to a query."""
+def grade_document(query: str, document: str) -> Tuple[GradeResult, Optional[CostBreakdown]]:
+    """
+    Grade a single document's relevance to a query.
+
+    Returns:
+        (grade_result: GradeResult, cost_breakdown: CostBreakdown)
+    """
     prompt = f"""Query: {query}
 
 Document:
@@ -55,21 +64,40 @@ Is this document relevant to answering the query?"""
         ],
         response_format=GradeResult,
     )
-    return response.choices[0].message.parsed
+
+    grade = response.choices[0].message.parsed
+
+    # v1.5: Track cost
+    cost = CostBreakdown(
+        model=GRADER_MODEL,
+        input_tokens=response.usage.prompt_tokens,
+        output_tokens=response.usage.completion_tokens,
+        cost_usd=0,  # will be calculated in __post_init__
+    )
+
+    return grade, cost
 
 
-def grade_documents(query: str, documents: list[str]) -> list[tuple[str, GradeResult]]:
-    """Grade multiple documents, return (doc, grade) pairs."""
-    return [(doc, grade_document(query, doc)) for doc in documents]
+def grade_documents(query: str, documents: list[str]):
+    """
+    Grade multiple documents, return (doc, grade, cost) tuples.
+
+    v1.5: Now returns costs for cost tracking.
+    """
+    results = []
+    for doc in documents:
+        grade, cost = grade_document(query, doc)
+        results.append((doc, grade, cost))
+    return results
 
 
 def filter_relevant(
     query: str,
     documents: list[str],
     threshold: float = 0.5,
-) -> tuple[list[str], list[GradeResult]]:
+) -> tuple[list[str], list[GradeResult], list[CostBreakdown]]:
     """
-    Return only relevant documents and all grade results.
+    Return only relevant documents, all grade results, and cost breakdowns.
 
     Args:
         query: The user's question
@@ -77,12 +105,13 @@ def filter_relevant(
         threshold: Minimum score to keep a document (default 0.5)
 
     Returns:
-        (relevant_docs, all_grades)
+        (relevant_docs, all_grades, all_costs)  [v1.5: added costs]
     """
     graded = grade_documents(query, documents)
     relevant_docs = [
-        doc for doc, grade in graded
+        doc for doc, grade, cost in graded
         if grade.relevant and grade.score >= threshold
     ]
-    all_grades = [grade for _, grade in graded]
-    return relevant_docs, all_grades
+    all_grades = [grade for _, grade, cost in graded]
+    all_costs = [cost for _, grade, cost in graded]
+    return relevant_docs, all_grades, all_costs

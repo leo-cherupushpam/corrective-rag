@@ -28,13 +28,14 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from corrector import CORRECTION_STRATEGIES, get_correction_candidates
+from costs import CostBreakdown, calculate_cost
 from grader import filter_relevant
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 EMBED_MODEL = "text-embedding-3-small"
-GENERATE_MODEL = "gpt-4o"
+GENERATE_MODEL = "gpt-5-nano-2025-08-07"  # v1.5: switched from gpt-4o (97% cheaper)
 TOP_K = 5
 MAX_CORRECTIONS = 2
 
@@ -76,6 +77,8 @@ class QueryTrace:
     needed_correction: bool = False
     fallback_used: bool = False             # True if answered without retrieved docs
     total_llm_calls: int = 0
+    cost_breakdown: list[CostBreakdown] = field(default_factory=list)  # v1.5: cost tracking
+    total_cost_usd: float = 0.0             # v1.5: total cost for this query
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +120,15 @@ class VectorStore:
 # Generator
 # ---------------------------------------------------------------------------
 
-def generate_answer(query: str, documents: list[str]) -> str:
-    """Generate an answer grounded in provided documents."""
+def generate_answer(query: str, documents: list[str]) -> tuple[str, Optional[CostBreakdown]]:
+    """
+    Generate an answer grounded in provided documents.
+
+    Returns:
+        (answer: str, cost_breakdown: CostBreakdown or None)
+    """
     if not documents:
-        return "I don't have enough information to answer this."
+        return "I don't have enough information to answer this.", None
 
     doc_block = "\n\n".join(
         f"[Doc {i+1}]:\n{doc}" for i, doc in enumerate(documents)
@@ -131,9 +139,20 @@ def generate_answer(query: str, documents: list[str]) -> str:
             {"role": "system", "content": GENERATOR_SYSTEM},
             {"role": "user", "content": f"Documents:\n{doc_block}\n\nQuestion: {query}"},
         ],
-        temperature=0,
+        # v1.5: gpt-5-nano doesn't support temperature=0, use default (1)
     )
-    return response.choices[0].message.content.strip()
+
+    answer = response.choices[0].message.content.strip()
+
+    # v1.5: Track cost
+    cost_breakdown = CostBreakdown(
+        model=GENERATE_MODEL,
+        input_tokens=response.usage.prompt_tokens,
+        output_tokens=response.usage.completion_tokens,
+        cost_usd=0,  # will be calculated in __post_init__
+    )
+
+    return answer, cost_breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +167,13 @@ def baseline_rag(query: str, store: VectorStore) -> QueryTrace:
     trace.docs_used = docs
     trace.total_llm_calls = 1  # just generation
 
-    trace.answer = generate_answer(query, docs)
+    # v1.5: Capture answer and cost
+    answer, cost = generate_answer(query, docs)
+    trace.answer = answer
+    if cost:
+        trace.cost_breakdown.append(cost)
+        trace.total_cost_usd += cost.cost_usd
+
     return trace
 
 
@@ -174,8 +199,14 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
         docs = store.retrieve(current_query)
 
         # Step 2: Grade
-        relevant_docs, grades = filter_relevant(current_query, docs)
+        # v1.5: Now returns costs as well
+        relevant_docs, grades, grader_costs = filter_relevant(current_query, docs)
         llm_calls += len(docs)  # one grader call per doc
+
+        # Track grader costs
+        for cost in grader_costs:
+            trace.cost_breakdown.append(cost)
+            trace.total_cost_usd += cost.cost_usd
 
         # Log grades to trace
         for doc, grade in zip(docs, grades):
@@ -211,7 +242,13 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
             trace.docs_used = []
 
     # Step 4: Generate
-    trace.answer = generate_answer(query, trace.docs_used)
+    # v1.5: Capture answer and cost
+    answer, cost = generate_answer(query, trace.docs_used)
+    trace.answer = answer
+    if cost:
+        trace.cost_breakdown.append(cost)
+        trace.total_cost_usd += cost.cost_usd
+
     trace.total_llm_calls = llm_calls + 1  # +1 for generation
 
     return trace
