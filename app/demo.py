@@ -231,33 +231,64 @@ with tab1:
 
         if c_trace.grades:
             with st.expander("📋 Document Grades", expanded=True):
+                # Score legend
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.caption("**🟢 0.8–1.0:** Highly relevant")
+                with col2:
+                    st.caption("**🟡 0.4–0.8:** Possibly relevant")
+                with col3:
+                    st.caption("**🔴 <0.4:** Unlikely relevant")
+                st.divider()
+
                 for i, g in enumerate(c_trace.grades):
                     icon = "✅" if g.relevant else "❌"
                     col_grade1, col_grade2 = st.columns([3, 1])
                     with col_grade1:
                         st.markdown(f"{icon} **Doc {i+1}:** {g.reason}")
-                        st.caption(f"_{g.document_preview[:80]}..._")
+                        # Expand preview to 150+ chars or until natural break
+                        preview = g.document_preview
+                        if len(preview) < 150 and not preview.endswith("…"):
+                            st.caption(f"_{preview}_")
+                        else:
+                            st.caption(f"_{preview}_")
                     with col_grade2:
                         score_color = "🟢" if g.score > 0.7 else "🟡" if g.score > 0.4 else "🔴"
                         st.caption(f"{score_color} {g.score:.2f}")
 
         if c_trace.corrections:
-            with st.expander("🔄 Corrections Attempted", expanded=True):
+            with st.expander(f"🔄 System Tried to Find Better Documents ({len(c_trace.corrections)} attempt{'s' if len(c_trace.corrections) > 1 else ''})", expanded=True):
+                st.caption("Initial documents didn't pass the quality gate. CRAG reformulated the query to find more relevant sources.")
+                st.divider()
                 for i, corr in enumerate(c_trace.corrections):
                     with st.container(border=True):
                         st.markdown(f"**Attempt {i+1}: {corr.strategy.title()}**")
+
+                        # Add strategy explanation
+                        strategy_explanations = {
+                            "expand": "Rewording the question with different terminology to broaden the search",
+                            "decompose": "Breaking the question into simpler sub-questions",
+                            "keywords": "Extracting key terms for focused keyword matching"
+                        }
+                        st.caption(f"_{strategy_explanations.get(corr.strategy, 'Reformulating query')}_")
+
+                        st.markdown("**Reformulated query:**")
                         st.code(corr.query_used, language=None)
+
                         col_c1, col_c2 = st.columns(2)
                         with col_c1:
                             st.metric("Retrieved", f"{corr.docs_retrieved} docs")
                         with col_c2:
-                            st.metric("Passed Grade", f"{corr.docs_passed_grade} docs")
+                            success_rate = (corr.docs_passed_grade / corr.docs_retrieved * 100) if corr.docs_retrieved > 0 else 0
+                            st.metric("Passed Grade", f"{corr.docs_passed_grade}/{corr.docs_retrieved} ({success_rate:.0f}%)")
 
         if c_trace.fallback_used:
             st.warning(
-                "⚠️ **Fallback Mode:** All correction strategies exhausted. "
-                "CRAG is answering from model knowledge (not retrieved docs). "
-                "Consider adding relevant documents to your knowledge base."
+                "⚠️ **Fallback Mode:** CRAG tried all correction strategies (expand, decompose, keywords) "
+                "but couldn't find documents that passed the relevance gate.\n\n"
+                "**What this means:** The answer below is based on the LLM's training data, not your documents. "
+                "You should verify this answer carefully, or add more relevant documents to your knowledge base.\n\n"
+                "**Confidence:** 🔴 Low (documents not available)"
             )
 
         # Cost-benefit summary

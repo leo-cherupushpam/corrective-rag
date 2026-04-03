@@ -222,8 +222,12 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
 
         # Log grades to trace
         for doc, grade in zip(docs, grades):
+            # Expand preview to 200 chars for better context
+            preview = doc[:200]
+            if len(doc) > 200:
+                preview = preview + "…"
             trace.grades.append(GradeTrace(
-                document_preview=doc[:100] + "…",
+                document_preview=preview,
                 relevant=grade.relevant,
                 score=grade.score,
                 reason=grade.reason,
