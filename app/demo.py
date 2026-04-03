@@ -339,8 +339,12 @@ with tab1:
     col1, col2 = st.columns([3, 1])
 
     with col1:
+        # Get selected question from sample buttons
+        selected = st.session_state.get("selected_question", "")
+        # Use selected question as initial value if available
         question_input = st.text_input(
             "Enter your question:",
+            value=selected,
             placeholder="What is your return policy?",
             label_visibility="collapsed",
         )
@@ -348,19 +352,16 @@ with tab1:
     with col2:
         run_analysis = st.button("🚀 Analyze", type="primary", use_container_width=True)
 
-    # Use selected question if available, otherwise use the input
+    # Use the text input (which may have been populated by selected question)
     if run_analysis:
-        # Check if a sample question was selected (use it if input is empty)
-        selected = st.session_state.get("selected_question", "")
-        query = question_input.strip() or selected.strip()
+        query = question_input.strip()
 
         if not query:
             st.warning("Please enter a question or select a sample question.")
             st.stop()
 
-        # Clear the selected question after using it
-        if selected:
-            st.session_state.selected_question = ""
+        # Clear the selected question after running analysis
+        st.session_state.selected_question = ""
 
         with st.spinner("Running both systems…"):
             b_trace = baseline_rag(query, store)
