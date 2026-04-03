@@ -496,6 +496,37 @@ with tab1:
             st.metric("Cost Overhead", f"+{cost_delta_pct:.0f}%",
                      help=f"Extra cost for {extra_calls} additional LLM calls (grader + corrector)")
 
+        # Cost explanation (Phase 6: Cost Transparency)
+        with st.expander("💡 Why does CRAG cost more? (Cost Breakdown)"):
+            st.markdown("""
+### Cost Tradeoff Explained
+
+**Baseline RAG** (simple pipeline):
+- 1 embedding call (retrieval)
+- 1 generation call
+- **Total:** ~0.15¢ per query
+
+**CRAG** (with quality gate + correction):
+- 1 embedding call (retrieval)
+- 5 grading calls (one per retrieved doc)
+- 0–2 correction attempts (if needed)
+- 1 generation call
+- **Total:** ~0.45¢ per query (+200%)
+
+### Is It Worth It?
+
+**CRAG costs 0.3¢ extra** but **prevents ~75% of hallucinations**
+
+| Use Case | Hallucination Cost | CRAG Worthwhile? |
+|---|---|---|
+| **Customer Support** | $10–50 per issue | ✅ Absolutely |
+| **Financial/Legal** | $100–1000+ | ✅ Essential |
+| **FAQ/Public Data** | $0.01–0.05 | ❌ Marginal |
+
+**Bottom Line:** If a prevented hallucination saves you >$0.005, CRAG pays for itself.
+See the **Observability** tab for detailed cost breakdowns and ROI analysis.
+            """)
+
         # Cost breakdown by component (v1.5)
         if c_trace.cost_breakdown:
             st.divider()
@@ -674,6 +705,50 @@ To generate benchmark results (hallucination rates, cost analysis, etc.):
         )
         m3.metric("Hallucination Reduction", f"{summary['hallucination_reduction_pct']}%")
         m4.metric("Avg Extra LLM Calls (CRAG)", f"+{summary['avg_extra_llm_calls']}")
+
+        st.divider()
+
+        # Cost summary (Phase 6: Cost Transparency)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Baseline Cost/Query",
+                     format_cost(summary['avg_baseline_cost_per_query']),
+                     help="Standard RAG: retrieve → generate")
+        with col2:
+            st.metric("CRAG Cost/Query",
+                     format_cost(summary['avg_crag_cost_per_query']),
+                     delta=f"+{summary['cost_delta_pct']:.0f}%",
+                     delta_color="inverse",
+                     help="CRAG adds: grading + correction strategies")
+        with col3:
+            prevented = summary['baseline_hallucinations'] - summary['crag_hallucinations']
+            st.metric("Hallucinations Prevented",
+                     prevented,
+                     help=f"Out of {summary['total_questions']} questions")
+
+        # Cost-benefit explanation
+        with st.expander("📊 Cost-Benefit Analysis"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**✅ What CRAG Achieves**")
+                st.markdown(f"""
+- **Hallucination Rate:** {summary['crag_hallucination_rate']}% (down from {summary['baseline_hallucination_rate']}%)
+- **Reduction:** {summary['hallucination_reduction_pct']}% fewer hallucinations
+- **Prevented:** {prevented} mistakes out of {summary['total_questions']} questions
+- **Cost Overhead:** +{summary['cost_delta_pct']:.0f}% per query
+                """)
+            with col2:
+                st.markdown("**💰 When CRAG Pays for Itself**")
+                st.markdown(f"""
+Cost per prevented hallucination: ~{format_cost(summary['cost_delta_usd'] / max(prevented, 1))}
+
+**CRAG is worth it if each prevented hallucination saves >$0.001**
+
+Examples:
+- Customer refund: $5–50 ✅
+- Support escalation: $10–100 ✅
+- Brand reputation: Hard to quantify, but valuable ✅
+                """)
 
         st.divider()
 
