@@ -13,11 +13,14 @@ UX Focus:
 
 import json
 import os
+from datetime import datetime
+from statistics import mean
 
 import streamlit as st
 from dotenv import load_dotenv
 
 from crag import VectorStore, baseline_rag, crag
+from costs import format_cost
 
 load_dotenv()
 
@@ -121,8 +124,12 @@ with st.sidebar:
             for i, d in enumerate(docs, 1):
                 st.caption(f"**Doc {i}:** {d[:100]}…")
 
+# v1.5: Initialize session state for observability
+if "query_history" not in st.session_state:
+    st.session_state.query_history = []
+
 # Tabs
-tab1, tab2, tab3 = st.tabs(["🔬 Try It", "📊 Results", "ℹ️ How It Works"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔬 Try It", "📊 Results", "ℹ️ How It Works", "📈 Observability"])
 
 # ---------------------------------------------------------------------------
 # TAB 1: Live comparison
@@ -153,6 +160,10 @@ with tab1:
         with st.spinner("Running both systems…"):
             b_trace = baseline_rag(query, store)
             c_trace = crag(query, store)
+
+        # v1.5: Track for observability dashboard
+        st.session_state.query_history.append(b_trace)
+        st.session_state.query_history.append(c_trace)
 
         st.divider()
         st.subheader(f"📝 Query: *{query}*")
@@ -405,3 +416,243 @@ If all corrections fail:
 
 **Average overhead: ~1.3x baseline cost for 75% fewer hallucinations.**
 """)
+
+# ---------------------------------------------------------------------------
+# TAB 4: Observability Dashboard (v1.5)
+# ---------------------------------------------------------------------------
+with tab4:
+    st.header("📈 System Observability")
+    st.caption("Real-time metrics from live queries + batch analysis from evaluation results")
+
+    # Helper function to extract grade scores
+    def extract_all_grades(traces):
+        """Extract all grader scores from traces"""
+        scores = []
+        for trace in traces:
+            if hasattr(trace, 'grades'):
+                for grade in trace.grades:
+                    if hasattr(grade, 'score'):
+                        scores.append(grade.score)
+        return scores
+
+    # Helper function to extract correction success
+    def extract_correction_stats(traces):
+        """Extract correction strategy success rates"""
+        strategies = {}
+        for trace in traces:
+            if hasattr(trace, 'corrections'):
+                for corr in trace.corrections:
+                    strategy = corr.strategy
+                    if corr.docs_retrieved > 0:
+                        success_rate = corr.docs_passed_grade / corr.docs_retrieved
+                    else:
+                        success_rate = 0
+                    if strategy not in strategies:
+                        strategies[strategy] = []
+                    strategies[strategy].append(success_rate)
+        return strategies
+
+    # Helper function to extract costs by model
+    def extract_cost_by_model(traces):
+        """Extract total costs by model"""
+        costs = {}
+        for trace in traces:
+            if hasattr(trace, 'cost_breakdown'):
+                for cb in trace.cost_breakdown:
+                    model = cb.model
+                    costs[model] = costs.get(model, 0) + cb.cost_usd
+        return costs
+
+    # === REAL-TIME METRICS ===
+    st.subheader("🟢 Real-Time Session Metrics")
+
+    # Session KPIs
+    session_traces = st.session_state.query_history
+    if session_traces:
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            num_queries = len(session_traces)
+            st.metric("Queries Run", num_queries)
+
+        with col2:
+            crag_traces = [t for t in session_traces if hasattr(t, 'mode') and t.mode == "crag"]
+            if crag_traces:
+                avg_confidence = mean([t.answer_confidence for t in crag_traces if hasattr(t, 'answer_confidence')])
+                st.metric("Avg CRAG Confidence", f"{avg_confidence:.0%}")
+            else:
+                st.metric("Avg CRAG Confidence", "N/A")
+
+        with col3:
+            hallucinations = sum(1 for t in crag_traces if hasattr(t, 'fallback_used') and t.fallback_used)
+            st.metric("Fallback Cases", hallucinations)
+
+        with col4:
+            total_cost = sum(t.total_cost_usd for t in session_traces if hasattr(t, 'total_cost_usd'))
+            st.metric("Total Cost (Session)", format_cost(total_cost))
+    else:
+        st.info("🔵 Run some queries in the 'Try It' tab to see real-time metrics here")
+
+    st.divider()
+
+    # === BATCH METRICS ===
+    st.subheader("📊 Batch Evaluation Metrics")
+
+    eval_path = os.path.join(os.path.dirname(__file__), "eval_results.json")
+    if os.path.exists(eval_path):
+        with open(eval_path) as f:
+            eval_data = json.load(f)
+
+        summary = eval_data["summary"]
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Questions", summary["total_questions"])
+        with col2:
+            st.metric("Hallucination Reduction", f"{summary['hallucination_reduction_pct']:.0f}%")
+        with col3:
+            st.metric("Avg CRAG Confidence", f"{summary['avg_crag_answer_confidence']:.2f}")
+        with col4:
+            st.metric("Cost Delta", f"{summary['cost_delta_pct']:+.0f}%")
+
+        st.divider()
+
+        # === VISUALIZATIONS ===
+        st.subheader("📉 System Visualizations")
+
+        # Chart 1: Grade Distribution (Real-time + Batch)
+        st.write("**Chart 1: Document Relevance Score Distribution**")
+        all_grades = extract_all_grades(session_traces)
+        batch_grades = []
+        for q in eval_data["per_question"]:
+            # Infer from results
+            batch_grades.append(q.get("crag_grader_confidence", 0.5))
+
+        combined_grades = all_grades + batch_grades
+        if combined_grades:
+            # Create simple histogram using Streamlit
+            grade_buckets = {
+                "0.0-0.2": sum(1 for g in combined_grades if 0 <= g < 0.2),
+                "0.2-0.4": sum(1 for g in combined_grades if 0.2 <= g < 0.4),
+                "0.4-0.6": sum(1 for g in combined_grades if 0.4 <= g < 0.6),
+                "0.6-0.8": sum(1 for g in combined_grades if 0.6 <= g < 0.8),
+                "0.8-1.0": sum(1 for g in combined_grades if 0.8 <= g <= 1.0),
+            }
+            st.bar_chart(grade_buckets)
+            st.caption("📌 Well-calibrated system: peak should be around 0.8-1.0 for relevant docs")
+        else:
+            st.info("No grade data available yet. Run queries to see distribution.")
+
+        # Chart 2: Correction Strategy Success
+        st.write("**Chart 2: Correction Strategy Success Rates**")
+        all_correction_stats = extract_correction_stats(session_traces)
+        if all_correction_stats:
+            strategy_success = {
+                s: (mean(rates) * 100) if rates else 0
+                for s, rates in all_correction_stats.items()
+            }
+            st.bar_chart(strategy_success)
+            st.caption("📌 Higher % = more effective strategy at recovering from failed retrieval")
+        else:
+            st.info("No correction data yet. Run queries that need corrections to see effectiveness.")
+
+        # Chart 3: Confidence vs Hallucination Correlation
+        st.write("**Chart 3: Confidence Calibration (Does confidence predict accuracy?)**")
+        crag_results = eval_data["per_question"]
+        if crag_results:
+            # Create data for scatter-like visualization
+            high_conf_correct = sum(
+                1 for r in crag_results
+                if r.get("crag_answer_confidence", 0) > 0.7 and not r.get("crag_hallucinated", False)
+            )
+            high_conf_halluc = sum(
+                1 for r in crag_results
+                if r.get("crag_answer_confidence", 0) > 0.7 and r.get("crag_hallucinated", False)
+            )
+            low_conf_correct = sum(
+                1 for r in crag_results
+                if r.get("crag_answer_confidence", 0) <= 0.7 and not r.get("crag_hallucinated", False)
+            )
+            low_conf_halluc = sum(
+                1 for r in crag_results
+                if r.get("crag_answer_confidence", 0) <= 0.7 and r.get("crag_hallucinated", False)
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("High Confidence ✓ Correct", high_conf_correct)
+            with col2:
+                st.metric("High Confidence ✗ Hallucinated", high_conf_halluc)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Low Confidence ✓ Correct", low_conf_correct)
+            with col2:
+                st.metric("Low Confidence ✗ Hallucinated", low_conf_halluc)
+
+            st.caption("📌 Good calibration: High confidence mostly correct, low confidence mostly hallucinated")
+        else:
+            st.info("No evaluation results yet.")
+
+        # Chart 4: Cost Breakdown
+        st.write("**Chart 4: Cost Breakdown by Component**")
+        cost_by_model = extract_cost_by_model(session_traces)
+        if cost_by_model:
+            # Map to component names
+            cost_by_component = {
+                "Generator\n(gpt-5-nano)": cost_by_model.get("gpt-5-nano-2025-08-07", 0),
+                "Grader\n(gpt-4o-mini)": cost_by_model.get("gpt-4o-mini-2024-07-18", 0),
+                "Embeddings": cost_by_model.get("text-embedding-3-small", 0),
+            }
+            # Filter out zero values
+            cost_by_component = {k: v for k, v in cost_by_component.items() if v > 0}
+            if cost_by_component:
+                total = sum(cost_by_component.values())
+                st.bar_chart(cost_by_component)
+                st.caption(f"💰 Total: {format_cost(total)}")
+            else:
+                st.info("No cost data yet. Run queries to see breakdown.")
+        else:
+            st.info("No cost data yet. Run queries to see breakdown.")
+
+        st.divider()
+
+        # === DATA MANAGEMENT ===
+        st.subheader("🔧 Data Management")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("🔄 Refresh Evaluation Data"):
+                st.cache_data.clear()
+                st.rerun()
+
+        with col2:
+            # Export session data
+            if session_traces:
+                session_export = {
+                    "timestamp": datetime.now().isoformat(),
+                    "session_metrics": {
+                        "total_queries": len(session_traces),
+                        "crag_queries": sum(1 for t in session_traces if hasattr(t, 'mode') and t.mode == "crag"),
+                        "avg_confidence": mean([t.answer_confidence for t in session_traces if hasattr(t, 'answer_confidence')]),
+                        "total_cost_usd": sum(t.total_cost_usd for t in session_traces if hasattr(t, 'total_cost_usd')),
+                    },
+                    "query_count": len(session_traces)
+                }
+                st.download_button(
+                    "📥 Download Session Summary",
+                    data=json.dumps(session_export, indent=2),
+                    file_name=f"crag_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+
+        with col3:
+            st.caption("💾 eval_results.json auto-updates after evaluation runs")
+
+    else:
+        st.info(
+            "No evaluation results found. Run the evaluation script first:\n\n"
+            "```bash\ncd app\npython eval.py\n```\n\n"
+            "Then reload this page."
+        )
