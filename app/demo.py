@@ -604,9 +604,55 @@ If it saves >$0.05:
 # ---------------------------------------------------------------------------
 with tab2:
     st.header("📊 Evaluation: Baseline RAG vs. CRAG")
-    st.caption("Run `python eval.py` to generate results, then reload this page.")
+    st.caption("Benchmark CRAG vs. Baseline RAG on test questions")
 
+    # Explanation of hallucination
+    with st.expander("❓ What is hallucination? Why does it matter?", expanded=False):
+        st.markdown("""
+**Hallucination:** When an LLM generates a plausible-sounding but incorrect answer that isn't supported by the provided documents.
+
+**Example:**
+- You ask: "Do you accept returns?"
+- Your documents say: "No returns"
+- Hallucinated answer: "Yes, returns within 30 days" ❌
+
+**Why it matters:**
+- Users can't distinguish truth from hallucination
+- Costs money: refunds, escalations, brand damage
+- Harder to detect than wrong predictions (because it sounds confident)
+
+**CRAG's solution:** Quality gate + correction loop catches retrieval failures BEFORE they cause hallucinations.
+        """)
+
+    # Evaluation workflow
+    st.divider()
     eval_path = os.path.join(os.path.dirname(__file__), "eval_results.json")
+
+    if not os.path.exists(eval_path):
+        st.warning("📊 **No evaluation results yet**")
+        st.markdown("""
+To generate benchmark results (hallucination rates, cost analysis, etc.):
+
+1. **Open a terminal** in the `app/` directory
+2. **Run the evaluation:**
+   ```bash
+   python eval.py
+   ```
+3. **Wait for completion** (typically 30–60 seconds)
+4. **Refresh this page** (press `R`) to see results
+
+**What gets tested:**
+- 8 questions about the sample knowledge base
+- Both Baseline RAG and CRAG on each question
+- Measures: hallucination rate, correction success, cost, confidence
+        """)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Check for Results", key="check_eval", use_container_width=True):
+                st.rerun()
+        with col2:
+            st.caption("✓ Auto-checks for eval_results.json when you reload")
 
     if os.path.exists(eval_path):
         with open(eval_path) as f:
