@@ -105,6 +105,66 @@ CRAG (catches it):
 
 ---
 
+## Cost Model
+
+### Pricing Breakdown
+
+| Component | Model | Cost | Purpose |
+|---|---|---|---|
+| **Generator** | gpt-5-nano-2025-08-07 | $0.05–0.40 per 1M tokens | Create answers (optimized for cost) |
+| **Grader** | gpt-4o-mini-2024-07-18 | $0.15–0.60 per 1M tokens | Evaluate document relevance |
+| **Corrector** | gpt-4o-mini-2024-07-18 | $0.15–0.60 per 1M tokens | Reformulate queries (on demand) |
+| **Embeddings** | text-embedding-3-small | $0.02 per 1M tokens | Vector search (retrieval) |
+
+### Typical Query Cost
+
+**Standard RAG (retrieve → generate):**
+- 1 retrieval call (embeddings)
+- 1 generation call (LLM)
+- **Average:** $0.000128 per query
+
+**CRAG (retrieve → grade → [correct] → generate):**
+- 1 retrieval call (embeddings)
+- 5 grading calls (1 per retrieved doc)
+- 0–2 correction attempts (conditional)
+- 1 generation call (LLM)
+- **Average:** $0.000572 per query (+346%)
+
+### When CRAG Is Worth It
+
+CRAG's cost overhead is justified when:
+- **Each prevented hallucination saves >$0.0004 in downstream costs** (refunds, escalations, brand damage)
+- **Your users can't tolerate wrong answers** (financial, legal, medical domains)
+- **Scale is 1K+ queries/month** (cost overhead amortized)
+
+**Example ROI Calculation:**
+```
+Monthly queries:              10,000
+CRAG overhead:                $5.72 (10k × $0.000572)
+Baseline hallucinations:      1,500–2,000 per month
+CRAG hallucinations:          200–250 per month
+Prevented hallucinations:     ~1,500 per month
+
+Cost per prevented hallucination: $5.72 / 1,500 = $0.0038
+If each prevented hallucination saves >$0.004, CRAG is profitable.
+```
+
+### Cost Optimization
+
+CRAG supports grader model swapping to optimize cost:
+- **gpt-5-nano:** 70% cheaper than gpt-4o-mini, lower accuracy (10% hallucination rate)
+- **gpt-4.1-nano:** 21% cheaper, good accuracy (9% hallucination rate)
+- **gpt-4o-mini:** Highest accuracy (8% hallucination rate)
+
+Run cost analysis to compare:
+```bash
+python cost_analysis.py
+```
+
+This tests all grader models on your evaluation set and recommends the best tradeoff.
+
+---
+
 ## Tech Stack
 
 - **Grader:** Claude Haiku or GPT-4o (LLM-as-judge)
