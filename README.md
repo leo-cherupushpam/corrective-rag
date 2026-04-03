@@ -193,21 +193,164 @@ corrective-rag/
 
 ---
 
-## Quick Start (v1.0)
+## System Requirements
+
+- **Python:** 3.9 or higher
+- **Package Manager:** pip (comes with Python)
+- **Environment:** Virtual environment recommended (venv or conda)
+- **API Key:** OpenAI API key (get one at [platform.openai.com](https://platform.openai.com/account/api-keys))
+- **Disk Space:** ~500 MB (Python packages + FAISS vector index)
+
+---
+
+## Getting Started
+
+### Step 1: Clone the Repository
 
 ```bash
 git clone https://github.com/leo-cherupushpam/corrective-rag
-cd corrective-rag/app
-
-# Install
-pip install -r requirements.txt
-
-# Run baseline evaluation
-python eval.py --baseline-only  # Standard RAG
-python eval.py --crag           # CRAG vs. baseline
-
-# Output: hallucination rate, grader accuracy, etc.
+cd corrective-rag
 ```
+
+### Step 2: Create a Virtual Environment (Recommended)
+
+**On macOS/Linux:**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+**On Windows:**
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### Step 3: Install Dependencies
+
+Navigate to the app directory and install:
+
+```bash
+cd app
+pip install -r requirements.txt
+```
+
+This installs:
+- `openai` — OpenAI API client
+- `faiss-cpu` — Vector store for document retrieval
+- `streamlit` — Interactive web demo
+- `pydantic` — Data validation
+- And other dependencies (see requirements.txt)
+
+### Step 4: Set Up Your OpenAI API Key
+
+**Option A: Using .env file (Recommended)**
+
+1. Copy the template file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Open `.env` and add your API key:
+   ```
+   OPENAI_API_KEY=sk-proj-your-actual-key-here
+   ```
+
+   Get your key from: https://platform.openai.com/account/api-keys
+
+3. Save the file. The code will automatically load it.
+
+**Option B: Set as environment variable (Alternative)**
+
+```bash
+export OPENAI_API_KEY=sk-proj-your-actual-key-here
+```
+
+### Step 5: Run the Demo
+
+```bash
+streamlit run demo.py
+```
+
+This opens an interactive web interface at `http://localhost:8501`
+
+### Step 6 (Optional): Run Evaluation Benchmark
+
+To benchmark CRAG vs. Baseline RAG:
+
+```bash
+python eval.py
+```
+
+Output: hallucination rate, correction success rate, cost analysis, etc.
+
+---
+
+## Troubleshooting Setup Errors
+
+### Error: `FileNotFoundError: OPENAI_API_KEY`
+
+**Problem:** The `.env` file is missing or the API key is not set.
+
+**Solution:**
+1. Check that `.env` file exists in the `app/` directory
+2. Verify the file contains: `OPENAI_API_KEY=sk-proj-your-key`
+3. Make sure you're running `streamlit run demo.py` from inside the `app/` directory
+4. Reload the Streamlit app (press `R` in the browser)
+
+### Error: `ModuleNotFoundError: No module named 'openai'` or similar
+
+**Problem:** Dependencies were not installed.
+
+**Solution:**
+```bash
+cd app
+pip install -r requirements.txt
+```
+
+If you're using a virtual environment, make sure it's activated:
+- macOS/Linux: `source venv/bin/activate`
+- Windows: `venv\Scripts\activate`
+
+### Error: `streamlit run demo.py` not found
+
+**Problem:** You're not in the correct directory.
+
+**Solution:** Make sure you're in the `corrective-rag/app/` directory:
+```bash
+cd corrective-rag/app
+streamlit run demo.py
+```
+
+### Error: OpenAI API error (e.g., `401 Unauthorized`)
+
+**Problem:** API key is invalid or expired.
+
+**Solution:**
+1. Go to https://platform.openai.com/account/api-keys
+2. Generate a new API key
+3. Update your `.env` file
+4. Restart the Streamlit app (press `R`)
+
+### Slow performance / API rate limiting
+
+**Problem:** Running many queries quickly causes rate limits.
+
+**Solution:**
+- Use the default FAQ documents (smaller knowledge base)
+- Reduce the number of concurrent queries
+- Check your OpenAI usage: https://platform.openai.com/account/usage/overview
+
+---
+
+## Quick Reference
+
+| Task | Command | Location |
+|------|---------|----------|
+| Interactive demo | `streamlit run demo.py` | `corrective-rag/app/` |
+| Run evaluation | `python eval.py` | `corrective-rag/app/` |
+| Analyze costs | `python cost_analysis.py` | `corrective-rag/app/` |
+| View project structure | `ls -la` | `corrective-rag/` |
 
 ---
 
