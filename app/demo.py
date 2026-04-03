@@ -313,15 +313,43 @@ with tab1:
         "then come back here to ask a question."
     )
 
+    # Sample questions for quick exploration
+    st.markdown("### 📚 Sample Questions")
+    st.caption("Click any question to try it")
+
+    sample_questions = [
+        ("🔄 Return Policy", "What is your return policy?"),
+        ("📦 Shipping Time", "How long does standard shipping take?"),
+        ("💰 Pricing", "What does the Pro plan cost?"),
+        ("🌍 International", "Do you ship internationally?"),
+        ("💬 Support Hours", "What are your support hours?"),
+        ("💳 Cancellation", "Can I get a refund if I cancel mid-month?"),
+    ]
+
+    cols = st.columns(3)
+    for idx, (label, question) in enumerate(sample_questions):
+        with cols[idx % 3]:
+            if st.button(label, key=f"sample_{idx}", use_container_width=True):
+                st.session_state.selected_question = question
+                st.rerun()
+
+    st.divider()
+
     # Query input (prominent, two-step)
     col1, col2 = st.columns([3, 1])
 
     with col1:
+        # Check if a sample question was selected
+        default_question = st.session_state.get("selected_question", "")
         question_input = st.text_input(
             "Enter your question:",
+            value=default_question,
             placeholder="What is your return policy?",
             label_visibility="collapsed",
         )
+        # Clear the selected question after it's been entered
+        if default_question and question_input == default_question:
+            st.session_state.selected_question = ""
 
     with col2:
         run_analysis = st.button("🚀 Analyze", type="primary", use_container_width=True)
