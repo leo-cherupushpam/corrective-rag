@@ -3,12 +3,12 @@ demo.py
 =======
 Streamlit demo: Baseline RAG vs. CRAG side-by-side.
 
-Shows visually:
-  - Retrieval grading decisions
-  - Correction loop activations
-  - Side-by-side answers
-  - Cost delta (extra LLM calls)
-  - Evaluation results from eval.json (if run)
+UX Focus:
+  - Clear, prominent query input (top of page)
+  - Visual comparison of answers
+  - Grading trace with color coding
+  - Correction loop visualization
+  - Metrics and cost analysis
 """
 
 import json
@@ -66,8 +66,8 @@ SAMPLE_QUESTIONS = [
     "What does the Pro plan include?",
     "Do you ship internationally?",
     "What are your support hours?",
-    "Do you support OAuth 2.0?",          # Not in docs — should trigger CRAG fallback
-    "What is your quarterly revenue?",    # Not in docs — should trigger CRAG fallback
+    "Do you support OAuth 2.0?",
+    "What is your quarterly revenue?",
 ]
 
 # ---------------------------------------------------------------------------
@@ -76,74 +76,78 @@ SAMPLE_QUESTIONS = [
 
 st.set_page_config(
     page_title="Corrective RAG Demo",
-    page_icon="🔍",
+    page_icon="🛡️",
     layout="wide",
 )
 
-st.title("🔍 Corrective RAG (CRAG)")
-st.caption(
-    "**Standard RAG** retrieves → generates (hallucinating if retrieval fails).  \n"
-    "**CRAG** adds a quality gate: retrieve → grade → correct → generate."
+# Header
+st.markdown("# 🛡️ Corrective RAG (CRAG)")
+st.markdown(
+    "**Reduce RAG hallucinations** by adding a quality gate before generation.  "
+    "Retrieval → Grade → Correct → Generate"
 )
 
+# Initialize sidebar first
+with st.sidebar:
+    st.header("📚 Knowledge Base")
+
+    # Custom documents
+    custom_docs_text = st.text_area(
+        "Add custom documents:",
+        value="",
+        height=120,
+        help="Leave blank to use default FAQ.",
+    )
+
+    use_custom = bool(custom_docs_text.strip())
+
+    if use_custom:
+        docs = [d.strip() for d in custom_docs_text.split("\n\n") if d.strip()]
+    else:
+        docs = DEFAULT_DOCUMENTS
+
+    # Initialize vector store
+    if "vector_store" not in st.session_state or st.sidebar.button("🔄 Re-index"):
+        with st.spinner("Indexing…"):
+            store = VectorStore()
+            store.add_documents(docs)
+            st.session_state.vector_store = store
+        st.sidebar.success(f"✅ {len(docs)} documents")
+
+    store = st.session_state.vector_store
+
+    if not use_custom:
+        with st.expander(f"View default docs ({len(docs)})", expanded=False):
+            for i, d in enumerate(docs, 1):
+                st.caption(f"**Doc {i}:** {d[:100]}…")
+
 # Tabs
-tab1, tab2, tab3 = st.tabs(["🔬 Live Comparison", "📊 Evaluation Results", "⚙️ How It Works"])
+tab1, tab2, tab3 = st.tabs(["🔬 Try It", "📊 Results", "ℹ️ How It Works"])
 
 # ---------------------------------------------------------------------------
 # TAB 1: Live comparison
 # ---------------------------------------------------------------------------
 with tab1:
-    with st.sidebar:
-        st.header("📚 Knowledge Base")
-        st.caption("Documents indexed into the vector store.")
+    st.markdown("## Ask a Question")
+    st.caption("Type or select a sample question below")
 
-        # Custom documents
-        custom_docs_text = st.text_area(
-            "Add custom documents (one per line, use blank line to separate):",
-            value="",
-            height=150,
-            help="Leave blank to use the default FAQ documents.",
+    # Query input (prominent, two-step)
+    col1, col2 = st.columns([3, 1])
+
+    with col1:
+        question_input = st.text_input(
+            "Enter your question:",
+            placeholder="What is your return policy?",
+            label_visibility="collapsed",
         )
 
-        use_custom = bool(custom_docs_text.strip())
+    with col2:
+        run_analysis = st.button("🚀 Analyze", type="primary", use_container_width=True)
 
-        if use_custom:
-            docs = [d.strip() for d in custom_docs_text.split("\n\n") if d.strip()]
-        else:
-            docs = DEFAULT_DOCUMENTS
-            with st.expander(f"Default knowledge base ({len(docs)} docs)"):
-                for i, d in enumerate(docs):
-                    st.markdown(f"**Doc {i+1}:** {d[:80]}…")
-
-        st.subheader("Settings")
-        grade_threshold = st.slider("Relevance threshold", 0.0, 1.0, 0.5, 0.1,
-                                    help="Min relevance score to accept a document")
-        max_corrections = st.number_input("Max correction attempts", 1, 3, 2,
-                                          help="How many times CRAG will try to fix bad retrievals")
-
-    # Initialize vector store
-    if "vector_store" not in st.session_state or st.sidebar.button("🔄 Re-index Documents"):
-        with st.spinner("Indexing documents…"):
-            store = VectorStore()
-            store.add_documents(docs)
-            st.session_state.vector_store = store
-            st.session_state.indexed_doc_count = len(docs)
-        st.sidebar.success(f"✅ {len(docs)} documents indexed")
-
-    store = st.session_state.vector_store
-
-    # Query input
-    st.subheader("Ask a Question")
-    col_q, col_btn = st.columns([4, 1])
-
-    with col_q:
-        question = st.selectbox("Try a sample question or type your own:", SAMPLE_QUESTIONS)
-        custom_q = st.text_input("Or type your own question:", placeholder="What is your refund policy?")
-        query = custom_q.strip() if custom_q.strip() else question
-
-    if st.button("🚀 Compare Baseline vs. CRAG", type="primary", use_container_width=True):
+    if run_analysis:
+        query = question_input.strip()
         if not query:
-            st.warning("Enter a question.")
+            st.warning("Please enter a question.")
             st.stop()
 
         with st.spinner("Running both systems…"):
@@ -151,66 +155,87 @@ with tab1:
             c_trace = crag(query, store)
 
         st.divider()
-        st.subheader(f"Query: *{query}*")
+        st.subheader(f"📝 Query: *{query}*")
 
         # Side-by-side answers
-        col_b, col_c = st.columns(2)
+        col_b, col_c = st.columns(2, gap="large")
 
         with col_b:
-            st.markdown("### 📄 Baseline RAG")
-            st.markdown(f"> {b_trace.answer}")
-            st.caption(f"LLM calls: {b_trace.total_llm_calls}  ·  Docs used: {len(b_trace.docs_used)}")
+            with st.container(border=True):
+                st.markdown("### 📄 Baseline RAG")
+                st.markdown(f"{b_trace.answer}")
+                st.divider()
+                st.caption(f"**LLM calls:** {b_trace.total_llm_calls}  |  **Docs used:** {len(b_trace.docs_used)}")
 
         with col_c:
-            status_color = "green" if not c_trace.fallback_used else "orange"
-            status_text = "✅ Answered with sources" if not c_trace.fallback_used else "⚠️ Fallback used"
-            correction_text = f" · 🔄 {len(c_trace.corrections)} correction(s)" if c_trace.needed_correction else ""
+            status_icon = "✅" if not c_trace.fallback_used else "⚠️"
+            status_text = "Answered with sources" if not c_trace.fallback_used else "Fallback (no docs)"
 
-            st.markdown("### 🛡️ CRAG")
-            st.markdown(f"> {c_trace.answer}")
-            st.caption(
-                f"LLM calls: {c_trace.total_llm_calls}  ·  "
-                f"Docs used: {len(c_trace.docs_used)}  ·  "
-                f"{status_text}{correction_text}"
-            )
+            with st.container(border=True):
+                st.markdown("### 🛡️ CRAG (Corrective)")
+                st.markdown(f"{c_trace.answer}")
+                st.divider()
+
+                col_meta1, col_meta2 = st.columns([1, 1])
+                with col_meta1:
+                    st.caption(f"**LLM calls:** {c_trace.total_llm_calls}")
+                    st.caption(f"**Docs used:** {len(c_trace.docs_used)}")
+                with col_meta2:
+                    st.caption(f"{status_icon} {status_text}")
+                    if c_trace.needed_correction:
+                        st.caption(f"🔄 {len(c_trace.corrections)} correction(s)")
+                    else:
+                        st.caption("✓ Passed grade immediately")
 
         st.divider()
 
-        # CRAG decision trace
-        st.subheader("🔍 CRAG Decision Trace")
+        # CRAG observability trace
+        st.subheader("🔍 System Trace")
 
         if c_trace.grades:
-            with st.expander("📋 Grader Decisions", expanded=True):
+            with st.expander("📋 Document Grades", expanded=True):
                 for i, g in enumerate(c_trace.grades):
                     icon = "✅" if g.relevant else "❌"
-                    color = "#2ecc71" if g.relevant else "#e74c3c"
-                    st.markdown(
-                        f"{icon} **Doc {i+1}** (score: {g.score:.2f}) — {g.reason}  \n"
-                        f"*Preview: {g.document_preview}*"
-                    )
+                    col_grade1, col_grade2 = st.columns([3, 1])
+                    with col_grade1:
+                        st.markdown(f"{icon} **Doc {i+1}:** {g.reason}")
+                        st.caption(f"_{g.document_preview[:80]}..._")
+                    with col_grade2:
+                        score_color = "🟢" if g.score > 0.7 else "🟡" if g.score > 0.4 else "🔴"
+                        st.caption(f"{score_color} {g.score:.2f}")
 
         if c_trace.corrections:
-            with st.expander("🔄 Correction Loop", expanded=True):
+            with st.expander("🔄 Corrections Attempted", expanded=True):
                 for i, corr in enumerate(c_trace.corrections):
-                    st.markdown(
-                        f"**Attempt {i+1}:** Strategy = `{corr.strategy}`  \n"
-                        f"Reformulated query: *\"{corr.query_used}\"*  \n"
-                        f"Retrieved: {corr.docs_retrieved} docs → {corr.docs_passed_grade} passed grade"
-                    )
+                    with st.container(border=True):
+                        st.markdown(f"**Attempt {i+1}: {corr.strategy.title()}**")
+                        st.code(corr.query_used, language=None)
+                        col_c1, col_c2 = st.columns(2)
+                        with col_c1:
+                            st.metric("Retrieved", f"{corr.docs_retrieved} docs")
+                        with col_c2:
+                            st.metric("Passed Grade", f"{corr.docs_passed_grade} docs")
 
         if c_trace.fallback_used:
             st.warning(
-                "⚠️ **Fallback triggered:** All correction strategies were exhausted. "
-                "CRAG answered without retrieved documents (from model training data). "
-                "Consider adding relevant documents to the knowledge base."
+                "⚠️ **Fallback Mode:** All correction strategies exhausted. "
+                "CRAG is answering from model knowledge (not retrieved docs). "
+                "Consider adding relevant documents to your knowledge base."
             )
 
-        # Cost delta
-        extra = c_trace.total_llm_calls - b_trace.total_llm_calls
-        st.info(
-            f"💰 **Cost delta:** CRAG used {extra} more LLM call(s) than Baseline "
-            f"(~{extra * 0.01:.2f}–{extra * 0.03:.2f}¢ extra at gpt-4o-mini pricing)"
-        )
+        # Cost-benefit summary
+        extra_calls = c_trace.total_llm_calls - b_trace.total_llm_calls
+        cost_low = extra_calls * 0.005  # gpt-4o-mini input cost
+        cost_high = extra_calls * 0.015  # gpt-4o-mini output cost estimate
+
+        col_cost1, col_cost2, col_cost3 = st.columns(3)
+        with col_cost1:
+            st.metric("Baseline LLM Calls", b_trace.total_llm_calls)
+        with col_cost2:
+            st.metric("CRAG LLM Calls", c_trace.total_llm_calls, delta=f"+{extra_calls}")
+        with col_cost3:
+            st.metric("Est. Cost Delta", f"{cost_low:.2f}–{cost_high:.2f}¢",
+                     help="Extra cost for quality gate at gpt-4o-mini pricing")
 
 # ---------------------------------------------------------------------------
 # TAB 2: Evaluation Results
@@ -245,21 +270,28 @@ with tab2:
         st.divider()
 
         # Per-question breakdown
-        st.subheader("Per-Question Results")
-        for r in eval_data["per_question"]:
+        st.subheader("Per-Question Breakdown")
+        for idx, r in enumerate(eval_data["per_question"], 1):
             b_icon = "❌" if r["baseline_hallucinated"] else "✅"
             c_icon = "❌" if r["crag_hallucinated"] else "✅"
             corr_note = " 🔄" if r["crag_needed_correction"] else ""
-            fb_note = " ⚠️ fallback" if r["crag_fallback"] else ""
+            fb_note = " ⚠️" if r["crag_fallback"] else ""
 
-            with st.expander(f"{b_icon} Baseline  {c_icon} CRAG{corr_note}{fb_note}  —  *{r['question']}*"):
+            header = f"{b_icon} {c_icon} Q{idx}: {r['question'][:60]}{corr_note}{fb_note}"
+            with st.expander(header):
                 col_b, col_c = st.columns(2)
                 with col_b:
-                    st.markdown("**Baseline Answer:**")
-                    st.markdown(f"> {r['baseline_answer']}")
+                    with st.container(border=True):
+                        st.markdown("**📄 Baseline**")
+                        st.markdown(f"_{r['baseline_answer']}_")
+                        status = "✅ Correct" if not r["baseline_hallucinated"] else "❌ Hallucinated"
+                        st.caption(status)
                 with col_c:
-                    st.markdown("**CRAG Answer:**")
-                    st.markdown(f"> {r['crag_answer']}")
+                    with st.container(border=True):
+                        st.markdown("**🛡️ CRAG**")
+                        st.markdown(f"_{r['crag_answer']}_")
+                        status = "✅ Correct" if not r["crag_hallucinated"] else "❌ Hallucinated"
+                        st.caption(status)
 
     else:
         st.info(

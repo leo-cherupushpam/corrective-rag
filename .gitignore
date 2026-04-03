@@ -10,3 +10,4 @@ venv/
 *.pkl
 *.csv
 .pytest_cache/
+eval_results.json
