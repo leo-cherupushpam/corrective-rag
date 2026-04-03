@@ -94,35 +94,124 @@ st.markdown(
 with st.sidebar:
     st.header("📚 Knowledge Base")
 
-    # Custom documents
-    custom_docs_text = st.text_area(
-        "Add custom documents:",
-        value="",
-        height=120,
-        help="Leave blank to use default FAQ.",
+    # Initialize KB mode state
+    if "kb_mode" not in st.session_state:
+        st.session_state.kb_mode = "default"
+
+    # IMPROVEMENT 4: Explicit KB Selection (Radio Buttons) - MEDIUM TERM
+    kb_choice = st.radio(
+        "Select Knowledge Base:",
+        options=["📄 Default FAQ", "✏️ Custom Documents"],
+        key="kb_selector",
+        help="Choose which documents to use for retrieval",
+        index=0 if st.session_state.kb_mode == "default" else 1
     )
 
-    use_custom = bool(custom_docs_text.strip())
+    # Update mode based on selection
+    st.session_state.kb_mode = "default" if kb_choice.startswith("📄") else "custom"
 
-    if use_custom:
-        docs = [d.strip() for d in custom_docs_text.split("\n\n") if d.strip()]
+    # IMPROVEMENT 1 & 4: Active KB Badge - QUICK WIN
+    if st.session_state.kb_mode == "default":
+        st.info(f"📄 **Using:** Default FAQ ({len(DEFAULT_DOCUMENTS)} docs)")
     else:
-        docs = DEFAULT_DOCUMENTS
+        st.info("✏️ **Using:** Custom Documents")
 
-    # Initialize vector store
-    if "vector_store" not in st.session_state or st.sidebar.button("🔄 Re-index"):
-        with st.spinner("Indexing…"):
+    st.divider()
+
+    # Handle Default FAQ mode
+    if st.session_state.kb_mode == "default":
+        docs = DEFAULT_DOCUMENTS
+        with st.expander(f"📖 View default documents ({len(docs)})"):
+            for i, d in enumerate(docs, 1):
+                st.caption(f"**Doc {i}:** {d[:150]}…")
+    else:
+        # Handle Custom Documents mode
+        st.markdown("**📤 Upload Custom Documents**")
+
+        # IMPROVEMENT 1: Better Help Text with Example - QUICK WIN
+        help_text = """**Format:** Paste documents separated by blank lines.
+Each paragraph (text between blank lines) becomes one searchable document.
+
+**Example:**
+Return Policy: We accept returns within 30 days...
+
+Shipping Information: Standard shipping takes 5-7 days...
+
+[Blank line = document separator]"""
+
+        custom_docs_text = st.text_area(
+            "Paste your documents:",
+            value="",
+            height=120,
+            help=help_text,
+            placeholder="Paste documents here. Separate with blank lines."
+        )
+
+        # IMPROVEMENT 2: Live Document Count Preview - QUICK WIN
+        if custom_docs_text.strip():
+            detected_docs = [d.strip() for d in custom_docs_text.split("\n\n") if d.strip()]
+            doc_count = len(detected_docs)
+
+            # IMPROVEMENT 6: Input Validation - MEDIUM TERM
+            validation_issues = []
+            if doc_count == 0:
+                validation_issues.append("❌ No documents detected")
+            elif doc_count > 10:
+                validation_issues.append(f"⚠️ {doc_count} documents (expensive - 10+ recommended)")
+
+            # Check for very short documents
+            short_docs = [i+1 for i, d in enumerate(detected_docs) if len(d.split()) < 10]
+            if short_docs:
+                validation_issues.append(f"⚠️ Docs {short_docs} are very short (<10 words)")
+
+            if validation_issues:
+                for issue in validation_issues:
+                    st.caption(issue)
+            else:
+                st.caption(f"✅ **Documents detected: {doc_count}**")
+
+            # IMPROVEMENT 5: Parse Preview Before Indexing - MEDIUM TERM
+            if doc_count > 0:
+                with st.expander(f"📋 Preview ({doc_count} documents)", expanded=False):
+                    for i, doc in enumerate(detected_docs, 1):
+                        preview_text = doc[:150] + ("..." if len(doc) > 150 else "")
+                        st.caption(f"**Doc {i}:** {preview_text}")
+
+            docs = detected_docs
+        else:
+            docs = []
+
+    # Initialize vector store (only if docs available)
+    if docs:
+        # IMPROVEMENT 3: Better Button Labeling - QUICK WIN
+        button_label = "📤 Apply Custom Documents" if st.session_state.kb_mode == "custom" else "🔄 Re-index"
+
+        # Button only shown when custom docs selected and preview looks good
+        button_disabled = (st.session_state.kb_mode == "custom" and len(docs) == 0)
+
+        if st.sidebar.button(button_label, disabled=button_disabled, key="apply_docs"):
+            with st.spinner("Indexing documents…"):
+                try:
+                    store = VectorStore()
+                    store.add_documents(docs)
+                    st.session_state.vector_store = store
+                    st.sidebar.success(f"✅ Indexed {len(docs)} documents successfully!")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Error indexing documents: {str(e)}")
+        else:
+            # Ensure vector store exists even without button click (on page load)
+            if "vector_store" not in st.session_state:
+                store = VectorStore()
+                store.add_documents(docs)
+                st.session_state.vector_store = store
+    else:
+        # Fallback for empty custom docs
+        if "vector_store" not in st.session_state and st.session_state.kb_mode == "default":
             store = VectorStore()
-            store.add_documents(docs)
+            store.add_documents(DEFAULT_DOCUMENTS)
             st.session_state.vector_store = store
-        st.sidebar.success(f"✅ {len(docs)} documents")
 
     store = st.session_state.vector_store
-
-    if not use_custom:
-        with st.expander(f"View default docs ({len(docs)})", expanded=False):
-            for i, d in enumerate(docs, 1):
-                st.caption(f"**Doc {i}:** {d[:100]}…")
 
 # v1.5: Initialize session state for observability
 if "query_history" not in st.session_state:
