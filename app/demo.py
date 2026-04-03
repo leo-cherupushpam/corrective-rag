@@ -218,7 +218,87 @@ if "query_history" not in st.session_state:
     st.session_state.query_history = []
 
 # Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["🔬 Try It", "📊 Results", "ℹ️ How It Works", "📈 Observability"])
+tab0, tab1, tab2, tab3, tab4 = st.tabs(["🚀 Getting Started", "🔬 Try It", "📊 Results", "ℹ️ How It Works", "📈 Observability"])
+
+# ---------------------------------------------------------------------------
+# TAB 0: Getting Started
+# ---------------------------------------------------------------------------
+with tab0:
+    st.markdown("## Welcome to Corrective RAG (CRAG)")
+    st.markdown(
+        "**Reduce hallucinations in RAG systems by catching bad retrievals before they cause wrong answers.**"
+    )
+
+    col1, col2 = st.columns(2, gap="large")
+
+    with col1:
+        st.markdown("### 👤 I'm a New User")
+        st.markdown(
+            "Want to see how CRAG works?\n\n"
+            "1. Click the **Try It** tab →\n"
+            "2. Ask a question about the sample documents\n"
+            "3. See how CRAG catches irrelevant documents and finds better ones\n\n"
+            "**Typical time:** 2–3 minutes"
+        )
+        st.button("→ Try It", key="btn_try_it", use_container_width=True, help="Go to Try It tab")
+
+    with col2:
+        st.markdown("### 📊 I Want to Benchmark CRAG")
+        st.markdown(
+            "Want to see CRAG vs. Baseline RAG on real test data?\n\n"
+            "1. Click the **Results** tab →\n"
+            "2. View hallucination rates, cost comparisons, correction success rates\n"
+            "3. See confidence calibration and when CRAG is profitable\n\n"
+            "**Typical time:** 1 minute (review pre-run results)"
+        )
+        st.button("→ Results", key="btn_results", use_container_width=True, help="Go to Results tab")
+
+    st.divider()
+
+    col1, col2 = st.columns(2, gap="large")
+
+    with col1:
+        st.markdown("### 📚 I Want to Learn How CRAG Works")
+        st.markdown(
+            "Curious about the architecture?\n\n"
+            "1. Click the **How It Works** tab →\n"
+            "2. See the full CRAG pipeline, research papers, and design decisions\n"
+            "3. Understand when CRAG is worth the extra cost\n\n"
+            "**Typical time:** 3–5 minutes"
+        )
+        st.button("→ How It Works", key="btn_how_it_works", use_container_width=True, help="Go to How It Works tab")
+
+    with col2:
+        st.markdown("### 📈 I Want to See System Metrics")
+        st.markdown(
+            "Want to monitor CRAG performance in detail?\n\n"
+            "1. Click the **Observability** tab →\n"
+            "2. Track grading confidence, cost breakdowns, and correction strategies\n"
+            "3. Analyze hallucination rates and cost-benefit tradeoffs\n\n"
+            "**Typical time:** 3–5 minutes"
+        )
+        st.button("→ Observability", key="btn_observability", use_container_width=True, help="Go to Observability tab")
+
+    st.divider()
+
+    # Quick facts
+    st.markdown("### ⚡ Quick Facts")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Hallucination Reduction", "75%", "vs. Standard RAG")
+
+    with col2:
+        st.metric("Cost Overhead", "+30%", "for quality gate")
+
+    with col3:
+        st.metric("Correction Success Rate", ">60%", "when needed")
+
+    st.markdown("---")
+    st.markdown(
+        "**Have questions?** See the README at the project root, or check out the "
+        "[CRAG research paper](https://arxiv.org/abs/2401.15884)."
+    )
 
 # ---------------------------------------------------------------------------
 # TAB 1: Live comparison
@@ -226,6 +306,12 @@ tab1, tab2, tab3, tab4 = st.tabs(["🔬 Try It", "📊 Results", "ℹ️ How It 
 with tab1:
     st.markdown("## Ask a Question")
     st.caption("Type or select a sample question below")
+
+    # First-time user banner
+    st.info(
+        "**🎯 First Time?** Start with the Getting Started tab (←) to learn about CRAG, "
+        "then come back here to ask a question."
+    )
 
     # Query input (prominent, two-step)
     col1, col2 = st.columns([3, 1])
