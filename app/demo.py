@@ -291,19 +291,45 @@ with tab1:
                 "**Confidence:** 🔴 Low (documents not available)"
             )
 
-        # Cost-benefit summary
+        # Cost-benefit summary (v1.5: using actual costs from trace)
         extra_calls = c_trace.total_llm_calls - b_trace.total_llm_calls
-        cost_low = extra_calls * 0.005  # gpt-4o-mini input cost
-        cost_high = extra_calls * 0.015  # gpt-4o-mini output cost estimate
+        cost_delta = c_trace.total_cost_usd - b_trace.total_cost_usd
+        cost_delta_pct = (cost_delta / b_trace.total_cost_usd * 100) if b_trace.total_cost_usd > 0 else 0
 
         col_cost1, col_cost2, col_cost3 = st.columns(3)
         with col_cost1:
-            st.metric("Baseline LLM Calls", b_trace.total_llm_calls)
+            st.metric("Baseline Cost", format_cost(b_trace.total_cost_usd),
+                     help="Cost of standard RAG (retrieve → generate)")
         with col_cost2:
-            st.metric("CRAG LLM Calls", c_trace.total_llm_calls, delta=f"+{extra_calls}")
+            st.metric("CRAG Cost", format_cost(c_trace.total_cost_usd),
+                     delta=format_cost(cost_delta),
+                     help="Cost of CRAG with quality gate + corrections")
         with col_cost3:
-            st.metric("Est. Cost Delta", f"{cost_low:.2f}–{cost_high:.2f}¢",
-                     help="Extra cost for quality gate at gpt-4o-mini pricing")
+            st.metric("Cost Delta", f"+{cost_delta_pct:.0f}%",
+                     help=f"Extra cost for {extra_calls} additional LLM calls (grader + corrector)")
+
+        # Cost breakdown by component (v1.5)
+        if c_trace.cost_breakdown:
+            st.divider()
+            st.markdown("**Cost Breakdown by Component:**")
+            cost_by_component = {}
+            for cb in c_trace.cost_breakdown:
+                # Map model names to readable labels
+                label = {
+                    "gpt-5-nano-2025-08-07": "Generator",
+                    "gpt-4o-mini-2024-07-18": "Grader",
+                    "text-embedding-3-small": "Embeddings"
+                }.get(cb.model, cb.model)
+                cost_by_component[label] = cost_by_component.get(label, 0) + cb.cost_usd
+
+            col1, col2, col3 = st.columns(3)
+            col_idx = 0
+            for label, cost in sorted(cost_by_component.items()):
+                cols = [col1, col2, col3]
+                with cols[col_idx % 3]:
+                    pct_of_total = (cost / c_trace.total_cost_usd * 100) if c_trace.total_cost_usd > 0 else 0
+                    st.caption(f"**{label}**: {format_cost(cost)} ({pct_of_total:.0f}%)")
+                col_idx += 1
 
 # ---------------------------------------------------------------------------
 # TAB 2: Evaluation Results
@@ -360,6 +386,46 @@ with tab2:
                         st.markdown(f"_{r['crag_answer']}_")
                         status = "✅ Correct" if not r["crag_hallucinated"] else "❌ Hallucinated"
                         st.caption(status)
+
+        # Cost breakdown by question (v1.5)
+        st.divider()
+        st.subheader("💰 Cost Breakdown by Question")
+
+        # Extract cost data from per-question results
+        cost_data = {}
+        for idx, r in enumerate(eval_data["per_question"], 1):
+            q_label = f"Q{idx}"
+            crag_cost = r.get("crag_cost_usd", 0)
+            cost_data[q_label] = crag_cost
+
+        if cost_data:
+            st.bar_chart(cost_data)
+
+            # Add analysis
+            max_cost_q = max(cost_data, key=cost_data.get)
+            min_cost_q = min(cost_data, key=cost_data.get)
+            max_cost_val = cost_data[max_cost_q]
+            min_cost_val = cost_data[min_cost_q]
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Most Expensive", max_cost_q,
+                         help=f"{max_cost_q} cost {format_cost(max_cost_val)}")
+            with col2:
+                st.metric("Least Expensive", min_cost_q,
+                         help=f"{min_cost_q} cost {format_cost(min_cost_val)}")
+            with col3:
+                avg_cost = mean(cost_data.values()) if cost_data else 0
+                st.metric("Average Cost", format_cost(avg_cost))
+
+            # Explanation
+            st.caption(
+                "📌 **Why costs vary:** Questions requiring correction strategies (🔄) or fallback (⚠️) "
+                "cost more because the system tries multiple retrieval approaches. "
+                "See per-question details above for correction attempts."
+            )
+        else:
+            st.info("Cost data not available in evaluation results.")
 
     else:
         st.info(
@@ -645,6 +711,84 @@ with tab4:
                 st.info("No cost data yet. Run queries to see breakdown.")
         else:
             st.info("No cost data yet. Run queries to see breakdown.")
+
+        st.divider()
+
+        # === GRADER MODEL COMPARISON (v1.5) ===
+        st.subheader("💰 Grader Model Optimization")
+        st.caption("Compare different grader models to find the best cost/accuracy tradeoff")
+
+        cost_analysis_path = os.path.join(os.path.dirname(__file__), "cost_analysis_report.json")
+        if os.path.exists(cost_analysis_path):
+            try:
+                with open(cost_analysis_path) as f:
+                    analysis = json.load(f)
+
+                # Display recommendation
+                if "best_tradeoff" in analysis:
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.info(
+                            f"✅ **Recommended Grader Model:** `{analysis['best_tradeoff']}`\n\n"
+                            f"Best balance of cost and accuracy across evaluated models."
+                        )
+                    with col2:
+                        st.caption(f"Last analyzed: {analysis.get('timestamp', 'unknown')}")
+
+                # Show detailed results table
+                if "detailed_results" in analysis:
+                    st.markdown("**Model Comparison Results:**")
+
+                    models_tested = analysis.get("models_tested", [])
+                    comparison_data = []
+
+                    for model in models_tested:
+                        if model in analysis["detailed_results"]:
+                            result = analysis["detailed_results"][model]["summary"]
+                            comparison_data.append({
+                                "Model": model,
+                                "Hallucination Rate": f"{result.get('crag_hallucination_rate', 0):.1f}%",
+                                "Avg Cost/Query": format_cost(result.get('avg_crag_cost_per_query', 0)),
+                                "Total Cost": format_cost(result.get('total_crag_cost_usd', 0)),
+                            })
+
+                    if comparison_data:
+                        st.table(comparison_data)
+
+                        # Savings analysis
+                        st.markdown("**Cost Savings Analysis:**")
+                        if len(models_tested) > 1:
+                            baseline_model = models_tested[-1]  # Typically the most expensive
+                            baseline_cost = analysis["detailed_results"][baseline_model]["summary"].get("avg_crag_cost_per_query", 0)
+
+                            savings_info = []
+                            for model in models_tested[:-1]:
+                                model_cost = analysis["detailed_results"][model]["summary"].get("avg_crag_cost_per_query", 0)
+                                savings = baseline_cost - model_cost
+                                savings_pct = (savings / baseline_cost * 100) if baseline_cost > 0 else 0
+
+                                savings_info.append({
+                                    "Model": model,
+                                    "Savings vs Baseline": f"{savings_pct:.0f}% ({format_cost(savings)}/query)"
+                                })
+
+                            if savings_info:
+                                st.table(savings_info)
+
+                        st.caption(
+                            f"💡 **To run cost analysis:** `python cost_analysis.py` in the app/ directory. "
+                            f"Compares {len(models_tested)} grader models on your evaluation set."
+                        )
+            except Exception as e:
+                st.warning(f"Could not load cost analysis report: {e}")
+        else:
+            st.info(
+                "**Cost Analysis Report Not Found**\n\n"
+                "Generate a cost analysis report to compare grader models:\n"
+                "```bash\ncd app\npython cost_analysis.py\n```\n\n"
+                "This will test different grader models (gpt-5-nano, gpt-4.1-nano, gpt-4o-mini) "
+                "on your evaluation set and recommend the best cost/accuracy tradeoff."
+            )
 
         st.divider()
 
