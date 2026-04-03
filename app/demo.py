@@ -402,10 +402,18 @@ with tab1:
         st.divider()
 
         # CRAG observability trace
-        st.subheader("🔍 System Trace")
+        col_trace, col_help = st.columns([10, 1])
+        with col_trace:
+            st.subheader("🔍 System Trace")
+        with col_help:
+            st.caption("ℹ️ [Glossary](https://github.com/leo-cherupushpam/corrective-rag#glossary)")
 
         if c_trace.grades:
-            with st.expander("📋 Document Grades", expanded=True):
+            with st.expander("📋 Document Grades (Grader Evaluations)", expanded=True):
+                st.caption(
+                    "🔍 The **Grader** is an LLM that evaluates whether each retrieved document "
+                    "is relevant to your question. See [Glossary](https://github.com/leo-cherupushpam/corrective-rag#glossary) for details."
+                )
                 # Score legend
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -433,7 +441,11 @@ with tab1:
 
         if c_trace.corrections:
             with st.expander(f"🔄 System Tried to Find Better Documents ({len(c_trace.corrections)} attempt{'s' if len(c_trace.corrections) > 1 else ''})", expanded=True):
-                st.caption("Initial documents didn't pass the quality gate. CRAG reformulated the query to find more relevant sources.")
+                st.caption(
+                    "Initial documents didn't pass the quality gate. "
+                    "**Correction strategies** (expand, decompose, keywords) reformulated the query to find more relevant sources. "
+                    "[Learn more](https://github.com/leo-cherupushpam/corrective-rag#glossary)"
+                )
                 st.divider()
                 for i, corr in enumerate(c_trace.corrections):
                     with st.container(border=True):

@@ -375,4 +375,48 @@ This project is based on:
 
 ---
 
+## Glossary
+
+### Key Concepts
+
+**Grader**
+An LLM (language model) that evaluates whether a retrieved document is relevant to your question. It answers "yes" or "no" to: "Does this document contain information about the query?" The grader has a relevance score (0.0–1.0) indicating confidence in its decision.
+
+**Fallback Mode**
+When CRAG tries multiple correction strategies (expand query, decompose, keyword extraction) but still can't find documents that pass the grader's relevance gate, it falls back to answering using the LLM's training data instead of your documents. This is marked as low-confidence because the answer isn't grounded in your knowledge base.
+
+**Correction Strategy**
+A technique CRAG uses to improve retrieval when initial documents fail the quality gate:
+- **Expand:** Reword the query with different terminology (e.g., "returns" → "refunds AND policy")
+- **Decompose:** Break a complex multi-part question into simpler sub-questions
+- **Keywords:** Extract key terms for sparse/keyword-based retrieval (BM25)
+
+**Confidence Score**
+A 0.0–1.0 score indicating how much we trust the answer is grounded in your documents:
+- **🟢 High (>0.7):** Retrieved documents clearly match your question
+- **🟡 Medium (0.4–0.7):** Documents may be relevant, but uncertainty remains
+- **🔴 Low (<0.4):** We don't have confident sources (fallback mode used)
+
+**Hallucination**
+When an LLM generates plausible-sounding but incorrect information that isn't supported by the documents. Example: You ask "Do you accept returns?" and the LLM says "Yes, within 30 days" even though your documents say "No returns." CRAG reduces hallucinations by verifying that retrieved documents actually answer the question.
+
+**Relevant Document**
+A document the grader scores as relevant (typically ≥0.6 confidence). It contains information directly related to the user's question. Example: For "What's your return policy?" a relevant document would be your return policy page, not your shipping information page.
+
+**Quality Gate**
+CRAG's core mechanism: a checkpoint that evaluates whether retrieved documents are good enough to generate an answer from. If they fail the gate (grader score too low), CRAG tries to find better documents instead of generating an answer from bad data.
+
+### Models & Infrastructure
+
+**Vector Store (FAISS)**
+A fast, local database that stores vector embeddings of your documents. When you ask a question, Streamlit converts it to a vector and finds the most similar document vectors. Fast but can miss exact keyword matches.
+
+**BM25 (Keyword Search)**
+A sparse, keyword-based retrieval method that looks for exact term matches. Slower than vectors but useful when exact terminology matters. Used by CRAG as a fallback correction strategy.
+
+**Text Embedding**
+A conversion of text into a vector of numbers (e.g., 1536 dimensions) that capture semantic meaning. Similar texts get similar embeddings. CRAG uses `text-embedding-3-small` for efficient vector retrieval.
+
+---
+
 **For the full product strategy, see [PRD.md](docs/PRD.md)**
