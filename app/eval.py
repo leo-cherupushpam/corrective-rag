@@ -231,6 +231,10 @@ def run_evaluation():
             "extra_llm_calls": c_trace.total_llm_calls - b_trace.total_llm_calls,
             "baseline_cost_usd": round(b_trace.total_cost_usd, 6),  # v1.5
             "crag_cost_usd": round(c_trace.total_cost_usd, 6),      # v1.5
+            # v1.5: Confidence scores
+            "baseline_answer_confidence": round(b_trace.answer_confidence, 2),
+            "crag_answer_confidence": round(c_trace.answer_confidence, 2),
+            "crag_grader_confidence": round(c_trace.grader_confidence, 2),
         })
 
         status_b = "❌ Hallucinated" if b_score["hallucinated"] else "✅ Correct"
@@ -255,6 +259,12 @@ def run_evaluation():
     # v1.5: Add cost metrics
     print(f"{'Total cost':<35} {format_cost(total_baseline_cost):>10} {format_cost(total_crag_cost):>10}")
     print(f"{'Avg cost per query':<35} {format_cost(total_baseline_cost/total):>10} {format_cost(total_crag_cost/total):>10}")
+    # v1.5: Add confidence metrics
+    avg_baseline_confidence = sum(r.get('baseline_answer_confidence', 0) for r in results) / total
+    avg_crag_confidence = sum(r.get('crag_answer_confidence', 0) for r in results) / total
+    avg_grader_confidence = sum(r.get('crag_grader_confidence', 0) for r in results) / total
+    print(f"{'Avg answer confidence':<35} {avg_baseline_confidence:>9.2f}  {avg_crag_confidence:>9.2f}")
+    print(f"{'Avg grader confidence (CRAG)':<35} {'N/A':>10} {avg_grader_confidence:>9.2f}")
     print()
 
     reduction = (baseline_hallucinations - crag_hallucinations) / max(baseline_hallucinations, 1) * 100
@@ -284,6 +294,10 @@ def run_evaluation():
                 "avg_crag_cost_per_query": round(total_crag_cost / total, 6),
                 "cost_delta_usd": round(total_crag_cost - total_baseline_cost, 6),
                 "cost_delta_pct": round((total_crag_cost - total_baseline_cost) / total_baseline_cost * 100, 1),
+                # v1.5: Confidence metrics
+                "avg_baseline_answer_confidence": round(avg_baseline_confidence, 2),
+                "avg_crag_answer_confidence": round(avg_crag_confidence, 2),
+                "avg_grader_confidence": round(avg_grader_confidence, 2),
             },
             "per_question": results,
         }, f, indent=2)

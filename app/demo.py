@@ -167,6 +167,19 @@ with tab1:
                 st.divider()
                 st.caption(f"**LLM calls:** {b_trace.total_llm_calls}  |  **Docs used:** {len(b_trace.docs_used)}")
 
+                # v1.5: Show baseline confidence
+                if b_trace.answer_confidence > 0:
+                    confidence_pct = b_trace.answer_confidence * 100
+                    if b_trace.answer_confidence > 0.7:
+                        badge = "🟢 High confidence"
+                    elif b_trace.answer_confidence > 0.4:
+                        badge = "🟡 Medium confidence"
+                    else:
+                        badge = "🔴 Low confidence"
+                    st.caption(f"**{badge}** ({confidence_pct:.0f}%)")
+                    if b_trace.confidence_reasoning:
+                        st.caption(f"_{b_trace.confidence_reasoning}_")
+
         with col_c:
             status_icon = "✅" if not c_trace.fallback_used else "⚠️"
             status_text = "Answered with sources" if not c_trace.fallback_used else "Fallback (no docs)"
@@ -186,6 +199,19 @@ with tab1:
                         st.caption(f"🔄 {len(c_trace.corrections)} correction(s)")
                     else:
                         st.caption("✓ Passed grade immediately")
+
+                # v1.5: Show CRAG confidence with reasoning
+                if c_trace.answer_confidence > 0:
+                    confidence_pct = c_trace.answer_confidence * 100
+                    if c_trace.answer_confidence > 0.7:
+                        badge = "🟢 High confidence"
+                    elif c_trace.answer_confidence > 0.4:
+                        badge = "🟡 Medium confidence"
+                    else:
+                        badge = "🔴 Low confidence"
+                    st.markdown(f"**{badge}** ({confidence_pct:.0f}%)")
+                    if c_trace.confidence_reasoning:
+                        st.caption(f"_{c_trace.confidence_reasoning}_")
 
         st.divider()
 

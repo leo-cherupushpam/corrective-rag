@@ -79,6 +79,10 @@ class QueryTrace:
     total_llm_calls: int = 0
     cost_breakdown: list[CostBreakdown] = field(default_factory=list)  # v1.5: cost tracking
     total_cost_usd: float = 0.0             # v1.5: total cost for this query
+    # v1.5: Confidence scores
+    answer_confidence: float = 0.0          # 0.0–1.0, aggregated from grader scores
+    confidence_reasoning: str = ""          # Why confident/uncertain (natural language)
+    grader_confidence: float = 0.0          # Average score of relevant document grades
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +178,14 @@ def baseline_rag(query: str, store: VectorStore) -> QueryTrace:
         trace.cost_breakdown.append(cost)
         trace.total_cost_usd += cost.cost_usd
 
+    # v1.5: Set baseline confidence (no quality gate, so moderate confidence if docs exist)
+    if docs:
+        trace.answer_confidence = 0.6  # Moderate confidence if docs retrieved
+        trace.confidence_reasoning = "Based on retrieved documents (no quality gate applied)."
+    else:
+        trace.answer_confidence = 0.1  # Low confidence for fallback
+        trace.confidence_reasoning = "No documents found; answer based on model training data."
+
     return trace
 
 
@@ -217,6 +229,15 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
                 reason=grade.reason,
             ))
 
+        # v1.5: Calculate grader confidence from relevant documents
+        if relevant_docs and grades:
+            # Average score of RELEVANT documents only
+            relevant_scores = [g.score for g in grades if g.relevant]
+            if relevant_scores:
+                trace.grader_confidence = sum(relevant_scores) / len(relevant_scores)
+        else:
+            trace.grader_confidence = 0.0
+
         if relevant_docs:
             # Docs passed grade — use them
             trace.docs_used = relevant_docs
@@ -248,6 +269,20 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
     if cost:
         trace.cost_breakdown.append(cost)
         trace.total_cost_usd += cost.cost_usd
+
+    # v1.5: Calculate final answer confidence
+    if trace.fallback_used:
+        trace.answer_confidence = 0.1  # Low confidence for fallback answers
+        trace.confidence_reasoning = "No documents matched the query; answer based on model training data only."
+    elif trace.needed_correction and trace.grader_confidence < 0.5:
+        trace.answer_confidence = 0.4  # Medium-low for corrected queries with weak docs
+        trace.confidence_reasoning = (
+            f"Required query correction. Average document relevance: {trace.grader_confidence:.0%}."
+        )
+    else:
+        # Cap at 0.95 (leave room for uncertainty)
+        trace.answer_confidence = min(0.95, trace.grader_confidence + 0.1)
+        trace.confidence_reasoning = f"Supported by relevant documents (confidence: {trace.grader_confidence:.0%})."
 
     trace.total_llm_calls = llm_calls + 1  # +1 for generation
 
