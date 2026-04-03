@@ -21,7 +21,7 @@ from pydantic import BaseModel
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-CORRECTOR_MODEL = "gpt-4o-mini"
+CORRECTOR_MODEL = "gpt-4o-mini-2024-07-18"  # v1.5: consistent with grader model
 
 
 class ExpandedQuery(BaseModel):
