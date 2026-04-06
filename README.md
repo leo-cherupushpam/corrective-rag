@@ -101,7 +101,66 @@ CRAG (catches it):
 | Hallucination Rate | 15–20% | <5% | **75% reduction** |
 | Grader Precision | — | >90% | Catches irrelevant docs |
 | Correction Success Rate | N/A | >60% | Recovers from failed retrieval |
-| Cost per Query | 1x | ~1.3x | +30% for grader + recount |
+| Cost per Query | 1x | ~1.3x (v1.5) / ~1.0x (v1.7*) | +30% (v1.5) / Neutral (v1.7*) |
+
+*v1.7 includes reranking optimization: ~20-30% cost reduction in grader calls
+
+---
+
+## Empirical Evaluation
+
+To ensure CRAG's claims are measurable, not just promised, we run continuous evaluation:
+
+### Evaluation Methodology
+- **Test Set:** 20 Q&A pairs across multiple categories:
+  - Direct (factual retrieval): "What's your return policy?"
+  - Inference (multi-step): "How long is data retained after cancellation?"
+  - Adversarial (tricky): "Can I return a digital product on sale?"
+  - Unanswerable (hallucination risk): "Do you have OAuth 2.0?"
+- **Scoring:** Keyword-based fact checking (e.g., answer must contain "30 days" + "unused")
+  - For unanswerable: correct if model says "I don't have information" (not hallucinating)
+- **Tools:** `app/eval.py` with batch mode support
+
+### Running Evaluation
+
+**Quick evaluation (built-in test set, ~2-3 minutes):**
+```bash
+cd app
+pip install -r requirements.txt
+python eval.py
+```
+
+**Batch evaluation (custom test set via CSV, ~varies):**
+```bash
+# Create eval.csv with columns: question, expected_facts, answerable, category
+# expected_facts: semicolon-separated (e.g., "30 days;5-7 business days")
+python eval.py --batch path/to/eval.csv
+```
+
+### Key Metrics Captured
+
+| Metric | How It's Measured | Interpretation |
+|---|---|---|
+| **Hallucination Rate** | % of unanswerable Qs where model made up answer | Lower is better (target: <5%) |
+| **Grader Accuracy** | % of documents graded correctly as relevant/irrelevant | >90% precision means grader is trustworthy |
+| **Correction Success Rate** | % of failed retrievals fixed by correction strategies | Shows how often reranking helps |
+| **Confidence Calibration** | When model says 80% confident, is it right 80% of the time? | Validates confidence scores are meaningful |
+| **Cost Reduction (v1.7)** | Cost before/after reranking (grader calls ÷ documents) | ~20-30% reduction expected |
+| **Answer Grounding (v1.6)** | % of answers with verified claims vs. gaps | Ensures answers are doc-backed, not hallucinated |
+
+### Results
+
+Results are saved to `eval_results.json` with:
+- Per-question breakdown (answer, grader trace, cost, confidence)
+- Summary metrics (hallucination rate, cost delta, calibration stats)
+- Category breakdown (which types of questions are hardest?)
+
+**Example output:**
+```
+Hallucination reduction: 75% (baseline 15% → CRAG <5%)
+Cost delta: +$0.00015 per query (+30%)
+Avg confidence calibration error: 0.08 (well-calibrated)
+```
 
 ---
 
