@@ -286,6 +286,37 @@ Output: hallucination rate, correction success rate, cost analysis, etc.
 
 ---
 
+## What's New in v1.5 (April 2026)
+
+### Cost Analysis & Transparency
+- **Real-time cost tracking:** Every query shows exact cost breakdown (generator, grader, embeddings)
+- **Visualizations:** Charts comparing baseline vs CRAG costs, cost projections by volume
+- **ROI calculator:** Interactive tool to test different grader models and query volumes
+- **Cost-benefit metrics:** See prevented hallucinations per dollar spent
+
+### Improved Knowledge Base Management
+- **Explicit KB selection:** Radio buttons make it clear whether you're using default or custom documents
+- **Active KB badge:** Always see which knowledge base is currently loaded
+- **Live preview:** See how your documents will be split before indexing
+- **Input validation:** Clear error messages and document count feedback
+- **Better formatting guidance:** Example format in help text
+
+### Refreshed User Interface
+- **Simplified Tab 1 (Try It):** One consolidated "Cost & Impact" section instead of 5 separate explainers
+- **Organized Tab 2 (Results):** Metrics grouped into Quality and Efficiency categories
+- **Better Tab 3 (How It Works):** Visual hierarchy with callout boxes, column-based pipeline
+- **Streamlined Tab 4 (Observability):** Reduced from 8 metric cards to 6, organized by topic
+- **Sample question buttons:** 6 common questions to explore the system immediately
+- **Improved visual hierarchy:** Removed clutter, better spacing, consistent styling
+
+### Usability Enhancements
+- Better confidence score explanations (what does 🟢🟡🔴 mean?)
+- Clearer grading trace (expanded document previews, score interpretation)
+- Fallback mode badge (⚠️ indicator when system can't find relevant docs)
+- Cleaner error handling throughout the interface
+
+---
+
 ## Troubleshooting Setup Errors
 
 ### Error: `FileNotFoundError: OPENAI_API_KEY`
@@ -351,6 +382,8 @@ streamlit run demo.py
 | Run evaluation | `python eval.py` | `corrective-rag/app/` |
 | Analyze costs | `python cost_analysis.py` | `corrective-rag/app/` |
 | View project structure | `ls -la` | `corrective-rag/` |
+
+---
 
 ---
 

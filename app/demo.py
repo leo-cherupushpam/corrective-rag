@@ -398,6 +398,30 @@ with tab1:
                 "**Confidence:** 🔴 Low (documents not available)"
             )
 
+        # v1.6: Answer-level verification badge
+        if c_trace.answer_grounded is not None:
+            if c_trace.answer_grounded and not c_trace.answer_gaps:
+                st.success(
+                    f"✅ **Answer Verified:** All claims are supported by the source documents "
+                    f"({c_trace.answer_supported_claims} claim(s) verified)."
+                )
+            elif c_trace.answer_grounded and c_trace.answer_gaps:
+                gap_list = "\n".join(f"- {g}" for g in c_trace.answer_gaps)
+                st.warning(
+                    f"⚠️ **Partially Verified:** {c_trace.answer_supported_claims} claim(s) verified, "
+                    f"but {len(c_trace.answer_gaps)} claim(s) could not be confirmed in documents:\n{gap_list}"
+                )
+            else:
+                gap_list = "\n".join(f"- {g}" for g in c_trace.answer_gaps) if c_trace.answer_gaps else "No specific details available"
+                st.error(
+                    f"🔴 **Verification Warning:** The answer contains claims not fully supported by documents:\n{gap_list}\n\n"
+                    "Consider reviewing the source documents or rephrasing your question."
+                )
+
+        # Confidence reasoning
+        if c_trace.confidence_reasoning:
+            st.caption(f"ℹ️ {c_trace.confidence_reasoning}")
+
         # Cost-benefit summary (v1.5: using actual costs from trace)
         extra_calls = c_trace.total_llm_calls - b_trace.total_llm_calls
         cost_delta = c_trace.total_cost_usd - b_trace.total_cost_usd

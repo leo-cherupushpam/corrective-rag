@@ -72,51 +72,139 @@ DOCUMENTS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Test Q&A pairs
-# Format: (question, expected_key_facts, is_answerable)
-# is_answerable=False tests that CRAG correctly says "I don't know"
+# Test Q&A pairs (v1.6: expanded from 8 → 20 cases)
+# Format: (question, expected_key_facts, is_answerable, category)
+# is_answerable=False: CRAG should say "I don't know", not hallucinate
+# Categories: direct | inference | adversarial | unanswerable
 # ---------------------------------------------------------------------------
 
 TEST_CASES = [
+    # --- Straightforward answerable questions ---
     {
         "question": "What is your return policy?",
         "expected_facts": ["30 days", "unused", "5-7 business days"],
         "answerable": True,
+        "category": "direct",
     },
     {
         "question": "How long does standard shipping take?",
         "expected_facts": ["5-7 business days", "5–7 business days"],
         "answerable": True,
+        "category": "direct",
     },
     {
         "question": "What does the Pro plan cost?",
         "expected_facts": ["$29", "29/mo"],
         "answerable": True,
+        "category": "direct",
     },
     {
         "question": "Do you ship internationally?",
         "expected_facts": ["not currently", "not available", "international"],
         "answerable": True,
+        "category": "direct",
     },
     {
         "question": "What are your support hours?",
         "expected_facts": ["Monday", "Friday", "9am", "6pm"],
         "answerable": True,
+        "category": "direct",
     },
     {
         "question": "Can I get a refund if I cancel mid-month?",
         "expected_facts": ["prorated", "no", "billing period"],
         "answerable": True,
+        "category": "direct",
+    },
+
+    # --- Require inference / locating specific details ---
+    {
+        "question": "What email do I use to start a return?",
+        "expected_facts": ["support@example.com"],
+        "answerable": True,
+        "category": "inference",
     },
     {
-        "question": "Do you support OAuth 2.0 authentication?",  # Not in docs
-        "expected_facts": [],
-        "answerable": False,
+        "question": "How long is my data kept after I cancel?",
+        "expected_facts": ["30 days"],
+        "answerable": True,
+        "category": "inference",
     },
     {
-        "question": "What is your revenue this quarter?",  # Not in docs
+        "question": "Which plans include live chat support?",
+        "expected_facts": ["Pro", "Enterprise"],
+        "answerable": True,
+        "category": "inference",
+    },
+    {
+        "question": "What storage does the Basic plan include?",
+        "expected_facts": ["10GB"],
+        "answerable": True,
+        "category": "inference",
+    },
+    {
+        "question": "How do I delete my personal data?",
+        "expected_facts": ["privacy@example.com"],
+        "answerable": True,
+        "category": "inference",
+    },
+    {
+        "question": "Is there a free trial and how long is it?",
+        "expected_facts": ["14-day", "14 day"],
+        "answerable": True,
+        "category": "inference",
+    },
+
+    # --- Adversarial / tricky (conflated or double-negative) ---
+    {
+        "question": "Can I return a digital product I bought on sale?",
+        "expected_facts": ["digital products", "sale items", "not"],
+        "answerable": True,
+        "category": "adversarial",
+    },
+    {
+        "question": "Is express shipping free for orders over $50?",
+        "expected_facts": ["free shipping", "standard", "$50"],
+        "answerable": True,
+        "category": "adversarial",
+    },
+
+    # --- Not in documents (should say "I don't know", not hallucinate) ---
+    {
+        "question": "Do you support OAuth 2.0 authentication?",
         "expected_facts": [],
         "answerable": False,
+        "category": "unanswerable",
+    },
+    {
+        "question": "What is your revenue this quarter?",
+        "expected_facts": [],
+        "answerable": False,
+        "category": "unanswerable",
+    },
+    {
+        "question": "Do you have a mobile app?",
+        "expected_facts": [],
+        "answerable": False,
+        "category": "unanswerable",
+    },
+    {
+        "question": "What is the name of your CEO?",
+        "expected_facts": [],
+        "answerable": False,
+        "category": "unanswerable",
+    },
+    {
+        "question": "Can I pay with cryptocurrency?",
+        "expected_facts": [],
+        "answerable": False,
+        "category": "unanswerable",
+    },
+    {
+        "question": "Do you offer a student discount?",
+        "expected_facts": [],
+        "answerable": False,
+        "category": "unanswerable",
     },
 ]
 
@@ -221,6 +309,7 @@ def run_evaluation():
 
         results.append({
             "question": q,
+            "category": tc.get("category", "direct"),    # v1.6: question category
             "answerable": tc["answerable"],
             "baseline_answer": b_trace.answer[:120] + "…",
             "crag_answer": c_trace.answer[:120] + "…",
@@ -229,12 +318,16 @@ def run_evaluation():
             "crag_needed_correction": c_trace.needed_correction,
             "crag_fallback": c_trace.fallback_used,
             "extra_llm_calls": c_trace.total_llm_calls - b_trace.total_llm_calls,
-            "baseline_cost_usd": round(b_trace.total_cost_usd, 6),  # v1.5
-            "crag_cost_usd": round(c_trace.total_cost_usd, 6),      # v1.5
+            "baseline_cost_usd": round(b_trace.total_cost_usd, 6),
+            "crag_cost_usd": round(c_trace.total_cost_usd, 6),
             # v1.5: Confidence scores
             "baseline_answer_confidence": round(b_trace.answer_confidence, 2),
             "crag_answer_confidence": round(c_trace.answer_confidence, 2),
             "crag_grader_confidence": round(c_trace.grader_confidence, 2),
+            # v1.6: Answer-level verification
+            "crag_answer_grounded": c_trace.answer_grounded,
+            "crag_answer_gaps": c_trace.answer_gaps,
+            "crag_supported_claims": c_trace.answer_supported_claims,
         })
 
         status_b = "❌ Hallucinated" if b_score["hallucinated"] else "✅ Correct"
@@ -271,10 +364,31 @@ def run_evaluation():
     print(f"Hallucination reduction: {reduction:.0f}%")
     cost_delta = total_crag_cost - total_baseline_cost
     print(f"Cost delta: {format_cost(cost_delta)} ({cost_delta/total_baseline_cost*100:+.0f}%)")
+
+    # v1.6: Per-category breakdown
+    categories = ["direct", "inference", "adversarial", "unanswerable"]
+    print()
+    print("BY CATEGORY:")
+    print(f"{'Category':<15} {'Count':>6} {'CRAG Hallucinated':>18}")
+    print("-" * 42)
+    category_summary = {}
+    for cat in categories:
+        cat_results = [r for r in results if r.get("category") == cat]
+        cat_hallucinated = sum(1 for r in cat_results if r["crag_hallucinated"])
+        category_summary[cat] = {"count": len(cat_results), "hallucinated": cat_hallucinated}
+        if cat_results:
+            print(f"  {cat:<13} {len(cat_results):>6} {cat_hallucinated:>18}")
+    print()
+
+    # v1.6: Grounding summary
+    grounded_count = sum(1 for r in results if r.get("crag_answer_grounded") is True)
+    ungrounded_count = sum(1 for r in results if r.get("crag_answer_grounded") is False)
+    not_verified = sum(1 for r in results if r.get("crag_answer_grounded") is None)
+    print(f"Answer grounding (v1.6 verification):")
+    print(f"  Fully grounded: {grounded_count}, Gaps found: {ungrounded_count}, Not verified (fallback): {not_verified}")
     print()
 
     # Save results to JSON for dashboard
-    # v1.5: Include cost metrics
     with open("eval_results.json", "w") as f:
         json.dump({
             "summary": {
@@ -298,6 +412,10 @@ def run_evaluation():
                 "avg_baseline_answer_confidence": round(avg_baseline_confidence, 2),
                 "avg_crag_answer_confidence": round(avg_crag_confidence, 2),
                 "avg_grader_confidence": round(avg_grader_confidence, 2),
+                # v1.6: Category breakdown & grounding
+                "category_breakdown": category_summary,
+                "answers_grounded": grounded_count,
+                "answers_with_gaps": ungrounded_count,
             },
             "per_question": results,
         }, f, indent=2)

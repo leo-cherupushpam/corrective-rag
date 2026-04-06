@@ -11,6 +11,9 @@ Design decisions:
 - Strategies are tried in order; stop when one yields passing grade
 - Max 2 correction attempts to avoid infinite loops (cost + latency)
 - Each strategy produces a list of reformulated queries to try
+- v1.6: Strategy registry — register custom domain-specific strategies
+  Usage: register_strategy("medical_synonyms", my_fn)
+         CORRECTION_STRATEGIES = ["medical_synonyms", "expand", "keywords"]
 """
 
 import os
@@ -114,25 +117,56 @@ def get_correction_candidates(query: str, strategy: str = "expand") -> list[str]
 
     Args:
         query: Original query that failed grading
-        strategy: "expand" | "decompose" | "keywords"
+        strategy: Any registered strategy name ("expand" | "decompose" | "keywords"
+                  or a custom-registered strategy)
 
     Returns:
         List of query strings to re-retrieve with
     """
-    if strategy == "expand":
-        result = expand_query(query)
-        return [result.expanded]
+    # v1.6: Look up from registry (supports custom strategies)
+    if strategy in _STRATEGY_REGISTRY:
+        return _STRATEGY_REGISTRY[strategy](query)
 
-    elif strategy == "decompose":
-        result = decompose_query(query)
-        return result.sub_queries
-
-    elif strategy == "keywords":
-        result = extract_keywords(query)
-        # Use the boolean query as primary, individual keywords as fallback
-        return [result.boolean_query] + result.keywords[:3]
-
-    return [query]  # No-op fallback
+    return [query]  # No-op fallback for unknown strategies
 
 
 CORRECTION_STRATEGIES = ["expand", "decompose", "keywords"]
+
+
+# ---------------------------------------------------------------------------
+# v1.6: Strategy registry — pluggable custom correction strategies
+# ---------------------------------------------------------------------------
+
+# Registry maps strategy name → callable(query: str) -> list[str]
+_STRATEGY_REGISTRY: dict[str, callable] = {
+    "expand": lambda q: [expand_query(q).expanded],
+    "decompose": lambda q: decompose_query(q).sub_queries,
+    "keywords": lambda q: [extract_keywords(q).boolean_query] + extract_keywords(q).keywords[:3],
+}
+
+
+def register_strategy(name: str, fn: callable) -> None:
+    """
+    Register a custom correction strategy.
+
+    Args:
+        name: Unique strategy name (e.g., "medical_synonyms")
+        fn:   Callable(query: str) -> list[str]
+              Must return a list of reformulated query strings to try.
+
+    Example:
+        def expand_medical(query: str) -> list[str]:
+            # Add medical synonyms, ICD codes, etc.
+            return [f"{query} symptoms treatment diagnosis"]
+
+        register_strategy("medical_synonyms", expand_medical)
+
+        # Then use it in your pipeline:
+        CORRECTION_STRATEGIES = ["medical_synonyms", "expand", "keywords"]
+    """
+    _STRATEGY_REGISTRY[name] = fn
+
+
+def list_strategies() -> list[str]:
+    """Return all registered strategy names (built-in + custom)."""
+    return list(_STRATEGY_REGISTRY.keys())

@@ -29,7 +29,7 @@ from openai import OpenAI
 
 from corrector import CORRECTION_STRATEGIES, get_correction_candidates
 from costs import CostBreakdown, calculate_cost
-from grader import filter_relevant
+from grader import AnswerVerification, filter_relevant, verify_answer
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -83,6 +83,10 @@ class QueryTrace:
     answer_confidence: float = 0.0          # 0.0–1.0, aggregated from grader scores
     confidence_reasoning: str = ""          # Why confident/uncertain (natural language)
     grader_confidence: float = 0.0          # Average score of relevant document grades
+    # v1.6: Answer-level verification
+    answer_grounded: Optional[bool] = None  # None = not verified (baseline), True/False for CRAG
+    answer_gaps: list[str] = field(default_factory=list)  # Claims not found in documents
+    answer_supported_claims: int = 0        # How many claims were document-backed
 
 
 # ---------------------------------------------------------------------------
@@ -274,19 +278,55 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
         trace.cost_breakdown.append(cost)
         trace.total_cost_usd += cost.cost_usd
 
-    # v1.5: Calculate final answer confidence
+    # v1.6: Verify the answer is grounded in documents (second quality gate)
+    if trace.docs_used and not trace.fallback_used:
+        verification, v_cost = verify_answer(query, answer, trace.docs_used)
+        trace.answer_grounded = verification.grounded
+        trace.answer_gaps = verification.gaps
+        trace.answer_supported_claims = verification.supported_claims
+        if v_cost:
+            trace.cost_breakdown.append(v_cost)
+            trace.total_cost_usd += v_cost.cost_usd
+        trace.total_llm_calls += 1  # verifier call
+    else:
+        trace.answer_grounded = False
+        trace.answer_gaps = []
+        trace.answer_supported_claims = 0
+
+    # v1.6: Calculate final answer confidence with richer factor-based reasoning
+    factors = []
+    penalty = 0.0
+
     if trace.fallback_used:
-        trace.answer_confidence = 0.1  # Low confidence for fallback answers
-        trace.confidence_reasoning = "No documents matched the query; answer based on model training data only."
-    elif trace.needed_correction and trace.grader_confidence < 0.5:
-        trace.answer_confidence = 0.4  # Medium-low for corrected queries with weak docs
+        trace.answer_confidence = 0.1
         trace.confidence_reasoning = (
-            f"Required query correction. Average document relevance: {trace.grader_confidence:.0%}."
+            "No relevant documents found after all correction attempts. "
+            "Answer is based on model training data only — treat with caution."
         )
     else:
-        # Cap at 0.95 (leave room for uncertainty)
-        trace.answer_confidence = min(0.95, trace.grader_confidence + 0.1)
-        trace.confidence_reasoning = f"Supported by relevant documents (confidence: {trace.grader_confidence:.0%})."
+        # Start from grader consensus
+        base = trace.grader_confidence
+
+        if trace.needed_correction:
+            penalty += 0.1
+            factors.append(f"required query correction ({len(trace.corrections)} attempt(s))")
+
+        if trace.answer_grounded is False and trace.answer_gaps:
+            penalty += 0.15
+            factors.append(f"{len(trace.answer_gaps)} claim(s) not fully supported by documents")
+
+        if trace.answer_grounded is True:
+            factors.append(f"{trace.answer_supported_claims} claim(s) verified against documents")
+
+        relevant_count = sum(1 for g in trace.grades if g.relevant)
+        factors.append(f"{relevant_count}/{len(trace.grades)} retrieved documents passed relevance check")
+
+        trace.answer_confidence = max(0.1, min(0.95, base + 0.1 - penalty))
+
+        if factors:
+            trace.confidence_reasoning = "Confidence factors: " + "; ".join(factors) + "."
+        else:
+            trace.confidence_reasoning = f"Supported by relevant documents (avg relevance: {base:.0%})."
 
     trace.total_llm_calls = llm_calls + 1  # +1 for generation
 
