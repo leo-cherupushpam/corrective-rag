@@ -15,12 +15,20 @@ Evaluation approach:
   - Report: hallucination rate, correction rate, cost delta
 
 Run:
-  python eval.py
+  python eval.py                          # Use built-in test cases
+  python eval.py --batch path/to/eval.csv # Load from CSV
+
+CSV Format:
+  question,expected_facts,answerable,category
+  "What is your return policy?","30 days;unused;5-7 business days",true,direct
+  "OAuth support?","",false,unanswerable
 
 Output:
-  Baseline vs. CRAG comparison table + per-question breakdown
+  Baseline vs. CRAG comparison table + per-question breakdown + confidence calibration
 """
 
+import argparse
+import csv
 import json
 import os
 import time
@@ -210,6 +218,125 @@ TEST_CASES = [
 
 
 # ---------------------------------------------------------------------------
+# Batch CSV Loader
+# ---------------------------------------------------------------------------
+
+def load_test_cases_from_csv(csv_path: str) -> list[dict]:
+    """
+    Load test cases from CSV file.
+
+    CSV format:
+      question,expected_facts,answerable,category
+      "What is your return policy?","30 days;unused;5-7 business days",true,direct
+
+    expected_facts: semicolon-separated list of facts to check
+    answerable: 'true' or 'false'
+    category: direct|inference|adversarial|unanswerable (optional)
+    """
+    test_cases = []
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader, 1):
+                if not row.get('question'):
+                    print(f"⚠️  Skipping row {i}: missing question")
+                    continue
+
+                # Parse expected facts (semicolon-separated)
+                facts_str = row.get('expected_facts', '')
+                expected_facts = [f.strip() for f in facts_str.split(';') if f.strip()] if facts_str else []
+
+                # Parse answerable (string 'true'/'false' → bool)
+                answerable_str = row.get('answerable', 'true').lower()
+                answerable = answerable_str in ('true', 'yes', '1')
+
+                test_cases.append({
+                    "question": row['question'].strip(),
+                    "expected_facts": expected_facts,
+                    "answerable": answerable,
+                    "category": row.get('category', 'direct').strip(),
+                })
+
+        print(f"✅ Loaded {len(test_cases)} test cases from {csv_path}\n")
+        return test_cases
+    except FileNotFoundError:
+        print(f"❌ File not found: {csv_path}")
+        return []
+    except Exception as e:
+        print(f"❌ Error loading CSV: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Confidence Calibration Analysis
+# ---------------------------------------------------------------------------
+
+def analyze_calibration(results: list[dict]) -> dict:
+    """
+    Analyze if confidence scores are calibrated.
+
+    Calibration check: when CRAG predicts X% confidence, is it right X% of the time?
+
+    Returns:
+      {
+        "calibration_bins": [
+          {"confidence_range": "0.0-0.2", "predicted": 0.1, "actual_accuracy": 0.0, "count": 3},
+          ...
+        ],
+        "overall_calibration_error": 0.05,
+        "is_well_calibrated": true
+      }
+    """
+    # Group results by confidence bins
+    bins = {}
+    bin_size = 0.1  # 10% bins
+
+    for r in results:
+        confidence = r.get('crag_answer_confidence', 0.0)
+        bin_idx = int(confidence / bin_size)
+        bin_key = f"{bin_idx * bin_size:.1f}-{(bin_idx + 1) * bin_size:.1f}"
+
+        if bin_key not in bins:
+            bins[bin_key] = {"confidences": [], "correct": []}
+
+        bins[bin_key]["confidences"].append(confidence)
+        # Correct if not hallucinated
+        bins[bin_key]["correct"].append(not r.get('crag_hallucinated', False))
+
+    # Calculate calibration per bin
+    calibration_bins = []
+    errors = []
+    for bin_key in sorted(bins.keys()):
+        data = bins[bin_key]
+        avg_confidence = sum(data["confidences"]) / len(data["confidences"])
+        accuracy = sum(data["correct"]) / len(data["correct"]) if data["correct"] else 0.0
+        error = abs(avg_confidence - accuracy)
+        errors.append(error)
+
+        calibration_bins.append({
+            "confidence_range": bin_key,
+            "predicted_confidence": round(avg_confidence, 2),
+            "actual_accuracy": round(accuracy, 2),
+            "count": len(data["correct"]),
+            "calibration_error": round(error, 2),
+        })
+
+    overall_error = sum(errors) / len(errors) if errors else 0.0
+    is_well_calibrated = overall_error < 0.15  # <15% error is good
+
+    return {
+        "calibration_bins": calibration_bins,
+        "overall_calibration_error": round(overall_error, 2),
+        "is_well_calibrated": is_well_calibrated,
+        "interpretation": (
+            "✅ Well calibrated" if is_well_calibrated
+            else "⚠️  Needs calibration" if overall_error < 0.25
+            else "❌ Poorly calibrated"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Scorer
 # ---------------------------------------------------------------------------
 
@@ -255,7 +382,17 @@ def score_answer(answer: str, expected_facts: list[str], answerable: bool) -> di
 # Main evaluation runner
 # ---------------------------------------------------------------------------
 
-def run_evaluation():
+def run_evaluation(test_cases: list[dict] = None):
+    """
+    Run evaluation on test cases.
+
+    Args:
+        test_cases: List of dicts with keys: question, expected_facts, answerable, category.
+                   If None, uses built-in TEST_CASES.
+    """
+    if test_cases is None:
+        test_cases = TEST_CASES
+
     print("=" * 60)
     print("CORRECTIVE RAG EVALUATION")
     print("Baseline RAG  vs.  CRAG")
@@ -266,7 +403,8 @@ def run_evaluation():
     print("Indexing documents...")
     store = VectorStore()
     store.add_documents(DOCUMENTS)
-    print(f"✅ {len(DOCUMENTS)} documents indexed\n")
+    print(f"✅ {len(DOCUMENTS)} documents indexed")
+    print(f"📊 Running evaluation on {len(test_cases)} test cases\n")
 
     results = []
     baseline_hallucinations = 0
@@ -277,7 +415,7 @@ def run_evaluation():
     total_baseline_cost = 0  # v1.5: cost tracking
     total_crag_cost = 0      # v1.5: cost tracking
 
-    for i, tc in enumerate(TEST_CASES):
+    for i, tc in enumerate(test_cases):
         q = tc["question"]
         print(f"Q{i+1}: {q}")
 
@@ -388,6 +526,23 @@ def run_evaluation():
     print(f"  Fully grounded: {grounded_count}, Gaps found: {ungrounded_count}, Not verified (fallback): {not_verified}")
     print()
 
+    # v1.8: Confidence calibration analysis
+    calibration = analyze_calibration(results)
+    print("CONFIDENCE CALIBRATION ANALYSIS:")
+    print(f"  {calibration['interpretation']}")
+    print(f"  Overall calibration error: {calibration['overall_calibration_error']}")
+    print()
+    print("  Calibration by confidence bin:")
+    print(f"  {'Range':<15} {'Predicted':>12} {'Actual':>12} {'Error':>10} {'Count':>8}")
+    print("  " + "-" * 60)
+    for bin_data in calibration['calibration_bins']:
+        print(f"  {bin_data['confidence_range']:<15} "
+              f"{bin_data['predicted_confidence']:>11.2f}  "
+              f"{bin_data['actual_accuracy']:>11.2f}  "
+              f"{bin_data['calibration_error']:>9.2f}  "
+              f"{bin_data['count']:>8}")
+    print()
+
     # Save results to JSON for dashboard
     with open("eval_results.json", "w") as f:
         json.dump({
@@ -416,6 +571,8 @@ def run_evaluation():
                 "category_breakdown": category_summary,
                 "answers_grounded": grounded_count,
                 "answers_with_gaps": ungrounded_count,
+                # v1.8: Calibration analysis
+                "calibration": calibration,
             },
             "per_question": results,
         }, f, indent=2)
@@ -425,4 +582,30 @@ def run_evaluation():
 
 
 if __name__ == "__main__":
-    run_evaluation()
+    parser = argparse.ArgumentParser(
+        description="Evaluate CRAG vs. Baseline RAG",
+        epilog="Examples:\n"
+               "  python eval.py                          # Use built-in test cases\n"
+               "  python eval.py --batch path/to/eval.csv # Load from CSV",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--batch",
+        type=str,
+        default=None,
+        help="Path to CSV file with test cases (question, expected_facts, answerable, category)"
+    )
+
+    args = parser.parse_args()
+
+    if args.batch:
+        # Load from CSV
+        test_cases = load_test_cases_from_csv(args.batch)
+        if not test_cases:
+            print("❌ No test cases loaded. Aborting.")
+            exit(1)
+    else:
+        # Use built-in test cases
+        test_cases = TEST_CASES
+
+    run_evaluation(test_cases)
