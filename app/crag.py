@@ -30,14 +30,16 @@ from openai import OpenAI
 from corrector import CORRECTION_STRATEGIES, get_correction_candidates
 from costs import CostBreakdown, calculate_cost
 from grader import AnswerVerification, filter_relevant, verify_answer
+from reranker import rerank_documents, should_rerank
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 EMBED_MODEL = "text-embedding-3-small"
 GENERATE_MODEL = "gpt-5-nano-2025-08-07"  # v1.5: switched from gpt-4o (97% cheaper)
-TOP_K = 5
+TOP_K = 10                                # v1.7: increased for reranking (will filter to ~3-5 after reranking)
 MAX_CORRECTIONS = 2
+RERANK_K = 3                              # v1.7: keep top-3 docs after reranking
 
 GENERATOR_SYSTEM = """You are a precise question-answering assistant.
 Answer the user's question using ONLY the provided documents.
@@ -87,6 +89,9 @@ class QueryTrace:
     answer_grounded: Optional[bool] = None  # None = not verified (baseline), True/False for CRAG
     answer_gaps: list[str] = field(default_factory=list)  # Claims not found in documents
     answer_supported_claims: int = 0        # How many claims were document-backed
+    # v1.7: Reranking
+    reranking_performed: bool = False       # Was reranking applied?
+    docs_before_rerank: int = 0             # How many docs before reranking
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +218,13 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
     for attempt in range(MAX_CORRECTIONS + 1):
         # Step 1: Retrieve
         docs = store.retrieve(current_query)
+
+        # Step 1b: Rerank (v1.7) — filter docs before grading
+        docs_before_rerank = len(docs)
+        if should_rerank(docs):
+            docs = rerank_documents(current_query, docs, k=RERANK_K)
+            trace.reranking_performed = True
+            trace.docs_before_rerank = docs_before_rerank
 
         # Step 2: Grade
         # v1.5: Now returns costs as well

@@ -359,6 +359,19 @@ with tab1:
                         score_color = "🟢" if g.score > 0.7 else "🟡" if g.score > 0.4 else "🔴"
                         st.caption(f"{score_color} {g.score:.2f}")
 
+        # v1.7: Reranking information
+        if c_trace.reranking_performed:
+            with st.expander("📊 Reranking (Document Filtering)", expanded=False):
+                st.caption(
+                    "**Reranking** filters retrieved documents by semantic relevance before grading. "
+                    "This reduces noise and lowers grading costs by ~20-30%."
+                )
+                col_rerank1, col_rerank2 = st.columns(2)
+                with col_rerank1:
+                    st.metric("Retrieved Documents", c_trace.docs_before_rerank)
+                with col_rerank2:
+                    st.metric("After Reranking", len(c_trace.grades) if c_trace.grades else 0)
+
         if c_trace.corrections:
             with st.expander(f"🔄 System Tried to Find Better Documents ({len(c_trace.corrections)} attempt{'s' if len(c_trace.corrections) > 1 else ''})", expanded=True):
                 st.caption(
