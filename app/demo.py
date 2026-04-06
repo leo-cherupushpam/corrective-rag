@@ -402,6 +402,34 @@ with tab1:
                             success_rate = (corr.docs_passed_grade / corr.docs_retrieved * 100) if corr.docs_retrieved > 0 else 0
                             st.metric("Passed Grade", f"{corr.docs_passed_grade}/{corr.docs_retrieved} ({success_rate:.0f}%)")
 
+        # v2.0: Multi-hop Retrieval
+        if c_trace.multi_hop_needed:
+            with st.expander(f"🔗 Multi-hop Retrieval ({len(c_trace.multi_hop_hops)} hop{'s' if len(c_trace.multi_hop_hops) > 1 else ''})", expanded=True):
+                st.caption(
+                    "The initial documents were incomplete. "
+                    "**Multi-hop retrieval** detected missing concepts and issued follow-up queries to bridge them. "
+                    "This synthesizes answers from multiple related documents."
+                )
+                st.divider()
+                for hop in c_trace.multi_hop_hops:
+                    with st.container(border=True):
+                        st.markdown(f"**Hop {hop.hop_number}:** {hop.bridge_entity}")
+
+                        # Sub-query used
+                        st.markdown("**Sub-query:**")
+                        st.code(hop.bridge_query, language=None)
+
+                        # Metrics
+                        col_h1, col_h2 = st.columns(2)
+                        with col_h1:
+                            st.metric("Docs Retrieved", hop.docs_retrieved)
+                        with col_h2:
+                            st.metric("Docs Passed Grade", hop.docs_passed_grade)
+
+                        # Docs added
+                        if hop.docs_added:
+                            st.caption(f"✅ Merged {len(hop.docs_added)} new document(s) into answer")
+
         if c_trace.fallback_used:
             st.warning(
                 "⚠️ **Fallback Mode:** CRAG tried all correction strategies (expand, decompose, keywords) "

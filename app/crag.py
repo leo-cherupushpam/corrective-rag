@@ -31,6 +31,7 @@ from corrector import CORRECTION_STRATEGIES, get_correction_candidates
 from costs import CostBreakdown, calculate_cost
 from grader import AnswerVerification, filter_relevant, verify_answer
 from reranker import rerank_documents, should_rerank
+from multi_hop import multi_hop_retrieve, MultiHopTrace
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -92,6 +93,9 @@ class QueryTrace:
     # v1.7: Reranking
     reranking_performed: bool = False       # Was reranking applied?
     docs_before_rerank: int = 0             # How many docs before reranking
+    # v2.0: Multi-hop Retrieval
+    multi_hop_hops: list[MultiHopTrace] = field(default_factory=list)  # Trace of each hop
+    multi_hop_needed: bool = False          # Was multi-hop triggered?
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +263,21 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
             trace.grader_confidence = 0.0
 
         if relevant_docs:
-            # Docs passed grade — use them
-            trace.docs_used = relevant_docs
+            # Docs passed grade — check if multi-hop is needed (v2.0)
+            # Only trigger multi-hop for sparse retrieval (< 2 docs) to control cost
+            if len(relevant_docs) < 2:
+                merged_docs, hop_traces, hop_costs = multi_hop_retrieve(
+                    query, relevant_docs, store, max_hops=2
+                )
+                trace.docs_used = merged_docs
+                trace.multi_hop_hops = hop_traces
+                trace.multi_hop_needed = len(hop_traces) > 0
+                for cost in hop_costs:
+                    trace.cost_breakdown.append(cost)
+                    trace.total_cost_usd += cost.cost_usd
+                llm_calls += len(hop_traces) * 2  # detector + grader per hop
+            else:
+                trace.docs_used = relevant_docs
             break
 
         # Step 3: Correct — try next strategy
@@ -322,6 +339,10 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
         if trace.needed_correction:
             penalty += 0.1
             factors.append(f"required query correction ({len(trace.corrections)} attempt(s))")
+
+        if trace.multi_hop_needed:
+            # Multi-hop adds confidence: we bridged across documents
+            factors.append(f"answer synthesized from {len(trace.multi_hop_hops)} document hops")
 
         if trace.answer_grounded is False and trace.answer_gaps:
             penalty += 0.15

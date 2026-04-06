@@ -214,6 +214,38 @@ TEST_CASES = [
         "answerable": False,
         "category": "unanswerable",
     },
+
+    # --- Multi-hop: require bridging 2+ documents ---
+    {
+        "question": "Can I get live chat support if I'm on the Basic plan?",
+        "expected_facts": ["Basic", "live chat", "Pro", "Enterprise"],
+        "answerable": True,
+        "category": "multi_hop",
+    },
+    {
+        "question": "What happens to my projects if I cancel and my data is deleted?",
+        "expected_facts": ["30 days", "cancel", "data", "Account Settings"],
+        "answerable": True,
+        "category": "multi_hop",
+    },
+    {
+        "question": "Is Express shipping free for orders under $50?",
+        "expected_facts": ["Express", "free shipping", "$50"],
+        "answerable": True,
+        "category": "multi_hop",
+    },
+    {
+        "question": "Can I return an item if it arrived after 30 days due to slow standard shipping?",
+        "expected_facts": ["30 days", "5-7 business days", "return", "shipping"],
+        "answerable": True,
+        "category": "multi_hop",
+    },
+    {
+        "question": "Does Enterprise plan include priority support via email?",
+        "expected_facts": ["Enterprise", "priority support", "support@example.com"],
+        "answerable": True,
+        "category": "multi_hop",
+    },
 ]
 
 
@@ -411,6 +443,7 @@ def run_evaluation(test_cases: list[dict] = None):
     crag_hallucinations = 0
     crag_corrections = 0
     crag_fallbacks = 0
+    crag_multi_hops = 0      # v2.0: count multi-hop queries
     total_extra_calls = 0
     total_baseline_cost = 0  # v1.5: cost tracking
     total_crag_cost = 0      # v1.5: cost tracking
@@ -439,6 +472,8 @@ def run_evaluation(test_cases: list[dict] = None):
             crag_corrections += 1
         if c_trace.fallback_used:
             crag_fallbacks += 1
+        if c_trace.multi_hop_needed:  # v2.0: track multi-hop
+            crag_multi_hops += 1
         total_extra_calls += c_trace.total_llm_calls - b_trace.total_llm_calls
 
         # v1.5: Track costs
@@ -466,6 +501,9 @@ def run_evaluation(test_cases: list[dict] = None):
             "crag_answer_grounded": c_trace.answer_grounded,
             "crag_answer_gaps": c_trace.answer_gaps,
             "crag_supported_claims": c_trace.answer_supported_claims,
+            # v2.0: Multi-hop
+            "crag_multi_hop_needed": c_trace.multi_hop_needed,
+            "crag_multi_hop_count": len(c_trace.multi_hop_hops),
         })
 
         status_b = "❌ Hallucinated" if b_score["hallucinated"] else "✅ Correct"
@@ -486,6 +524,7 @@ def run_evaluation(test_cases: list[dict] = None):
     print(f"{'Hallucination Rate':<35} {baseline_hallucinations/total*100:>9.1f}% {crag_hallucinations/total*100:>9.1f}%")
     print(f"{'Queries needing correction':<35} {'N/A':>10} {crag_corrections:>10}")
     print(f"{'Correction fallback used':<35} {'N/A':>10} {crag_fallbacks:>10}")
+    print(f"{'Multi-hop queries':<35} {'N/A':>10} {crag_multi_hops:>10} (v2.0)")
     print(f"{'Avg extra LLM calls (CRAG)':<35} {'0':>10} {total_extra_calls/total:>9.1f}")
     # v1.5: Add cost metrics
     print(f"{'Total cost':<35} {format_cost(total_baseline_cost):>10} {format_cost(total_crag_cost):>10}")
@@ -555,6 +594,8 @@ def run_evaluation(test_cases: list[dict] = None):
                 "hallucination_reduction_pct": round(reduction, 1),
                 "crag_corrections": crag_corrections,
                 "crag_fallbacks": crag_fallbacks,
+                "crag_multi_hops": crag_multi_hops,
+                "crag_multi_hop_rate_pct": round(crag_multi_hops / total * 100, 1),
                 "avg_extra_llm_calls": round(total_extra_calls / total, 1),
                 # v1.5: Cost metrics
                 "total_baseline_cost_usd": round(total_baseline_cost, 6),
