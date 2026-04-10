@@ -12,6 +12,7 @@ Design:
 v2.0: Multi-hop Retrieval
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional
@@ -24,6 +25,10 @@ from pydantic import BaseModel
 from costs import CostBreakdown, calculate_cost
 from grader import filter_relevant
 from reranker import rerank_documents, should_rerank
+from retry import retry_corrector
+from errors import CorrectionError
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -77,12 +82,22 @@ For example:
   → Decision: needs_multi_hop = False (already have the answer)"""
 
 
+@retry_corrector(max_retries=2)
 def detect_multi_hop(query: str, docs: list[str]) -> tuple[MultiHopDecision, Optional[CostBreakdown]]:
     """
     LLM call: decide if query needs multi-hop retrieval + extract bridge query.
 
+    Args:
+        query: User's question
+        docs: Documents retrieved so far
+
     Returns:
         (decision: MultiHopDecision, cost: CostBreakdown)
+
+    Retry behavior:
+        - Retries on rate limits, 5xx errors, timeouts
+        - Gracefully returns no-multi-hop on persistent failure
+        - Max 2 attempts with exponential backoff
     """
     doc_preview = "\n---\n".join([d[:300] + "..." if len(d) > 300 else d for d in docs])
 
@@ -105,21 +120,33 @@ If multi-hop is needed, what should the follow-up query be?"""
             temperature=0,
         )
 
-        decision = response.parsed
-        cost = calculate_cost(
+        decision = response.choices[0].message.parsed
+        cost = CostBreakdown(
             model=DETECTOR_MODEL,
             input_tokens=response.usage.prompt_tokens,
             output_tokens=response.usage.completion_tokens,
+            cost_usd=0,  # will be calculated in __post_init__
         )
         return decision, cost
-    except Exception as e:
-        # Fallback: no multi-hop on error
-        print(f"⚠️  Multi-hop detection error: {e}")
+
+    except ValueError as e:
+        logger.error(f"Multi-hop detection parse error: {str(e)}")
+        # Fallback: no multi-hop on parse error
         return MultiHopDecision(
             needs_multi_hop=False,
             bridge_query="",
             bridge_entity="",
-            reason=f"Detection error: {str(e)}"
+            reason=f"Detection parse error"
+        ), None
+
+    except Exception as e:
+        logger.error(f"Multi-hop detection error: {str(e)}")
+        # Fallback: no multi-hop on error
+        return MultiHopDecision(
+            needs_multi_hop=False,
+            bridge_query="",
+            bridge_entity="",
+            reason=f"Detection error"
         ), None
 
 

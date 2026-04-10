@@ -18,6 +18,7 @@ Design decisions:
 """
 
 import dataclasses
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional
@@ -32,6 +33,10 @@ from costs import CostBreakdown, calculate_cost
 from grader import AnswerVerification, filter_relevant, verify_answer
 from reranker import rerank_documents, should_rerank
 from multi_hop import multi_hop_retrieve, MultiHopTrace
+from retry import retry_retriever, retry_generator
+from errors import RetrievalError, GenerationError
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -110,10 +115,29 @@ class VectorStore:
         self.documents: list[str] = []
         self.dim = 1536  # text-embedding-3-small dimension
 
+    @retry_retriever(max_retries=2)
     def _embed(self, texts: list[str]) -> np.ndarray:
-        response = client.embeddings.create(model=EMBED_MODEL, input=texts)
-        vectors = [r.embedding for r in response.data]
-        return np.array(vectors, dtype="float32")
+        """
+        Embed texts using OpenAI embeddings with automatic retry on transient errors.
+
+        Args:
+            texts: List of text strings to embed
+
+        Returns:
+            numpy array of embeddings (shape: len(texts) x 1536)
+
+        Retry behavior:
+            - Retries on rate limits, 5xx errors, timeouts
+            - Fails fast on auth errors
+            - Max 2 attempts with exponential backoff
+        """
+        try:
+            response = client.embeddings.create(model=EMBED_MODEL, input=texts)
+            vectors = [r.embedding for r in response.data]
+            return np.array(vectors, dtype="float32")
+        except Exception as e:
+            logger.error(f"Embedding failed: {str(e)}")
+            raise RetrievalError(f"Failed to embed texts: {str(e)}", retryable=False) from e
 
     def add_documents(self, documents: list[str]):
         """Index documents into FAISS."""
@@ -137,12 +161,23 @@ class VectorStore:
 # Generator
 # ---------------------------------------------------------------------------
 
+@retry_generator(max_retries=3)
 def generate_answer(query: str, documents: list[str]) -> tuple[str, Optional[CostBreakdown]]:
     """
     Generate an answer grounded in provided documents.
 
+    Args:
+        query: User's question
+        documents: List of relevant documents to ground answer in
+
     Returns:
         (answer: str, cost_breakdown: CostBreakdown or None)
+
+    Retry behavior:
+        - Retries on rate limits, 5xx errors, timeouts
+        - Fails fast on auth errors
+        - Max 3 attempts with exponential backoff
+        - Gracefully returns fallback answer on persistent failure
     """
     if not documents:
         return "I don't have enough information to answer this.", None
@@ -150,26 +185,33 @@ def generate_answer(query: str, documents: list[str]) -> tuple[str, Optional[Cos
     doc_block = "\n\n".join(
         f"[Doc {i+1}]:\n{doc}" for i, doc in enumerate(documents)
     )
-    response = client.chat.completions.create(
-        model=GENERATE_MODEL,
-        messages=[
-            {"role": "system", "content": GENERATOR_SYSTEM},
-            {"role": "user", "content": f"Documents:\n{doc_block}\n\nQuestion: {query}"},
-        ],
-        # v1.5: gpt-5-nano doesn't support temperature=0, use default (1)
-    )
 
-    answer = response.choices[0].message.content.strip()
+    try:
+        response = client.chat.completions.create(
+            model=GENERATE_MODEL,
+            messages=[
+                {"role": "system", "content": GENERATOR_SYSTEM},
+                {"role": "user", "content": f"Documents:\n{doc_block}\n\nQuestion: {query}"},
+            ],
+            # v1.5: gpt-5-nano doesn't support temperature=0, use default (1)
+        )
 
-    # v1.5: Track cost
-    cost_breakdown = CostBreakdown(
-        model=GENERATE_MODEL,
-        input_tokens=response.usage.prompt_tokens,
-        output_tokens=response.usage.completion_tokens,
-        cost_usd=0,  # will be calculated in __post_init__
-    )
+        answer = response.choices[0].message.content.strip()
 
-    return answer, cost_breakdown
+        # v1.5: Track cost
+        cost_breakdown = CostBreakdown(
+            model=GENERATE_MODEL,
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+            cost_usd=0,  # will be calculated in __post_init__
+        )
+
+        return answer, cost_breakdown
+
+    except Exception as e:
+        logger.error(f"Generation failed: {str(e)}")
+        # Graceful fallback: return generic response
+        return "I encountered an error generating an answer. Please try again.", None
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +305,13 @@ def crag(query: str, store: VectorStore) -> QueryTrace:
             trace.grader_confidence = 0.0
 
         if relevant_docs:
-            # Docs passed grade — check if multi-hop is needed (v2.0)
-            # Only trigger multi-hop for sparse retrieval (< 2 docs) to control cost
-            if len(relevant_docs) < 2:
+            # Docs passed grade — check if multi-hop is needed (v2.1)
+            # Trigger multi-hop if: fewer than 2 docs OR average relevance score below threshold
+            # This catches marginal doc sets (e.g., Q22/Q25 with 2 low-confidence docs)
+            avg_relevance_score = trace.grader_confidence if relevant_docs else 0.0
+            needs_multi_hop = len(relevant_docs) < 2 or avg_relevance_score < 0.7
+
+            if needs_multi_hop:
                 merged_docs, hop_traces, hop_costs = multi_hop_retrieve(
                     query, relevant_docs, store, max_hops=2
                 )

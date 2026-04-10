@@ -16,13 +16,19 @@ Design decisions:
          CORRECTION_STRATEGIES = ["medical_synonyms", "expand", "keywords"]
 """
 
+import logging
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
+from retry import retry_corrector
+from errors import CorrectionError
+
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+logger = logging.getLogger(__name__)
 
 CORRECTOR_MODEL = "gpt-4o-mini-2024-07-18"  # v1.5: consistent with grader model
 
@@ -42,73 +48,110 @@ class KeywordQuery(BaseModel):
     boolean_query: str       # e.g. "return policy AND refund AND days"
 
 
+@retry_corrector(max_retries=2)
 def expand_query(query: str) -> ExpandedQuery:
     """
     Strategy 1: Rewrite the query to be broader or more specific.
     Used when: query is too narrow/jargon-heavy and misses relevant docs.
+
+    Retry behavior:
+        - Retries on rate limits, 5xx errors, timeouts
+        - Fails fast on auth/validation errors
+        - Max 2 attempts with exponential backoff
     """
-    response = client.beta.chat.completions.parse(
-        model=CORRECTOR_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a search query optimizer. "
-                    "Rewrite the query to be clearer, broader, or use different terminology "
-                    "that might match documents better. Do not change the intent."
-                ),
-            },
-            {"role": "user", "content": f"Original query: {query}\n\nRewrite it to improve document retrieval."},
-        ],
-        response_format=ExpandedQuery,
-    )
-    return response.choices[0].message.parsed
+    try:
+        response = client.beta.chat.completions.parse(
+            model=CORRECTOR_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a search query optimizer. "
+                        "Rewrite the query to be clearer, broader, or use different terminology "
+                        "that might match documents better. Do not change the intent."
+                    ),
+                },
+                {"role": "user", "content": f"Original query: {query}\n\nRewrite it to improve document retrieval."},
+            ],
+            response_format=ExpandedQuery,
+        )
+        return response.choices[0].message.parsed
+    except ValueError as e:
+        logger.error(f"Failed to parse expanded query: {str(e)}")
+        # Fallback: return original query
+        return ExpandedQuery(expanded=query, rationale="Parse error - returning original")
 
 
+@retry_corrector(max_retries=2)
 def decompose_query(query: str) -> DecomposedQueries:
     """
     Strategy 2: Break complex multi-part query into focused sub-queries.
     Used when: query asks multiple things; retriever can't satisfy all at once.
+
+    Retry behavior:
+        - Retries on rate limits, 5xx errors, timeouts
+        - Fails fast on auth/validation errors
+        - Max 2 attempts with exponential backoff
     """
-    response = client.beta.chat.completions.parse(
-        model=CORRECTOR_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a query decomposer. "
-                    "Break the user's query into 2–3 simple, focused sub-questions. "
-                    "Each sub-question should be answerable independently."
-                ),
-            },
-            {"role": "user", "content": f"Query to decompose: {query}"},
-        ],
-        response_format=DecomposedQueries,
-    )
-    return response.choices[0].message.parsed
+    try:
+        response = client.beta.chat.completions.parse(
+            model=CORRECTOR_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a query decomposer. "
+                        "Break the user's query into 2–3 simple, focused sub-questions. "
+                        "Each sub-question should be answerable independently."
+                    ),
+                },
+                {"role": "user", "content": f"Query to decompose: {query}"},
+            ],
+            response_format=DecomposedQueries,
+        )
+        return response.choices[0].message.parsed
+    except ValueError as e:
+        logger.error(f"Failed to parse decomposed queries: {str(e)}")
+        # Fallback: return original query as single sub-query
+        return DecomposedQueries(sub_queries=[query], rationale="Parse error - returning original")
 
 
+@retry_corrector(max_retries=2)
 def extract_keywords(query: str) -> KeywordQuery:
     """
     Strategy 3: Extract core keywords for sparse/BM25-style retrieval.
     Used when: dense embedding retrieval fails; sparse search may catch exact terms.
+
+    Retry behavior:
+        - Retries on rate limits, 5xx errors, timeouts
+        - Fails fast on auth/validation errors
+        - Max 2 attempts with exponential backoff
     """
-    response = client.beta.chat.completions.parse(
-        model=CORRECTOR_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Extract the most important keywords from this query for document retrieval. "
-                    "Focus on nouns, verbs, and domain terms. Ignore filler words. "
-                    "Also write a boolean search query using AND/OR operators."
-                ),
-            },
-            {"role": "user", "content": f"Query: {query}"},
-        ],
-        response_format=KeywordQuery,
-    )
-    return response.choices[0].message.parsed
+    try:
+        response = client.beta.chat.completions.parse(
+            model=CORRECTOR_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract the most important keywords from this query for document retrieval. "
+                        "Focus on nouns, verbs, and domain terms. Ignore filler words. "
+                        "Also write a boolean search query using AND/OR operators."
+                    ),
+                },
+                {"role": "user", "content": f"Query: {query}"},
+            ],
+            response_format=KeywordQuery,
+        )
+        return response.choices[0].message.parsed
+    except ValueError as e:
+        logger.error(f"Failed to parse keyword query: {str(e)}")
+        # Fallback: split query into simple keywords
+        keywords = query.split()
+        return KeywordQuery(
+            keywords=keywords,
+            boolean_query=" AND ".join(keywords) if keywords else query
+        )
 
 
 def get_correction_candidates(query: str, strategy: str = "expand") -> list[str]:

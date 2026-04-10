@@ -13,6 +13,7 @@ Design decisions:
 - v1.6: Answer-level verification (grounding check after generation)
 """
 
+import logging
 import os
 from typing import Optional, Tuple
 from dotenv import load_dotenv
@@ -20,6 +21,10 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from costs import CostBreakdown
+from retry import retry_grader
+from errors import GraderError
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -44,12 +49,18 @@ Return:
 - reason: one sentence explaining your decision"""
 
 
+@retry_grader(max_retries=3)
 def grade_document(query: str, document: str) -> Tuple[GradeResult, Optional[CostBreakdown]]:
     """
     Grade a single document's relevance to a query.
 
     Returns:
         (grade_result: GradeResult, cost_breakdown: CostBreakdown)
+
+    Retry behavior:
+        - Retries on transient errors (rate limits, 5xx, timeouts)
+        - Fails fast on validation errors (4xx)
+        - Max 3 attempts with exponential backoff
     """
     prompt = f"""Query: {query}
 
@@ -58,26 +69,35 @@ Document:
 
 Is this document relevant to answering the query?"""
 
-    response = client.beta.chat.completions.parse(
-        model=GRADER_MODEL,
-        messages=[
-            {"role": "system", "content": GRADER_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        response_format=GradeResult,
-    )
+    try:
+        response = client.beta.chat.completions.parse(
+            model=GRADER_MODEL,
+            messages=[
+                {"role": "system", "content": GRADER_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=GradeResult,
+        )
 
-    grade = response.choices[0].message.parsed
+        grade = response.choices[0].message.parsed
 
-    # v1.5: Track cost
-    cost = CostBreakdown(
-        model=GRADER_MODEL,
-        input_tokens=response.usage.prompt_tokens,
-        output_tokens=response.usage.completion_tokens,
-        cost_usd=0,  # will be calculated in __post_init__
-    )
+        # v1.5: Track cost
+        cost = CostBreakdown(
+            model=GRADER_MODEL,
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+            cost_usd=0,  # will be calculated in __post_init__
+        )
 
-    return grade, cost
+        return grade, cost
+
+    except ValueError as e:
+        logger.error(f"Failed to parse grader response: {str(e)}")
+        # Fallback to neutral grade on parse error
+        return (
+            GradeResult(relevant=False, score=0.5, reason="Grader parse error"),
+            None,
+        )
 
 
 def grade_documents(query: str, documents: list[str]):
@@ -116,6 +136,7 @@ Return:
 - supported_claims: count of claims you could verify against the documents"""
 
 
+@retry_grader(max_retries=3)
 def verify_answer(
     query: str,
     answer: str,
@@ -129,6 +150,11 @@ def verify_answer(
 
     Returns:
         (verification: AnswerVerification, cost: CostBreakdown)
+
+    Retry behavior:
+        - Retries on transient errors (rate limits, 5xx, timeouts)
+        - Returns unverified fallback on persistent failures
+        - Max 3 attempts with exponential backoff
     """
     if not documents or not answer:
         return AnswerVerification(
@@ -152,24 +178,38 @@ Generated Answer:
 
 Verify if the answer is grounded in the source documents above."""
 
-    response = client.beta.chat.completions.parse(
-        model=GRADER_MODEL,
-        messages=[
-            {"role": "system", "content": VERIFIER_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        response_format=AnswerVerification,
-    )
+    try:
+        response = client.beta.chat.completions.parse(
+            model=GRADER_MODEL,
+            messages=[
+                {"role": "system", "content": VERIFIER_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=AnswerVerification,
+        )
 
-    verification = response.choices[0].message.parsed
-    cost = CostBreakdown(
-        model=GRADER_MODEL,
-        input_tokens=response.usage.prompt_tokens,
-        output_tokens=response.usage.completion_tokens,
-        cost_usd=0,
-    )
+        verification = response.choices[0].message.parsed
+        cost = CostBreakdown(
+            model=GRADER_MODEL,
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+            cost_usd=0,
+        )
 
-    return verification, cost
+        return verification, cost
+
+    except ValueError as e:
+        logger.error(f"Failed to parse verifier response: {str(e)}")
+        # Fallback: return unverified but don't block answer
+        return (
+            AnswerVerification(
+                grounded=False,
+                confidence=0.0,
+                gaps=["Verification failed"],
+                supported_claims=0,
+            ),
+            None,
+        )
 
 
 def filter_relevant(
