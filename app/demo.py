@@ -3,12 +3,11 @@ demo.py
 =======
 Streamlit demo: Baseline RAG vs. CRAG side-by-side.
 
-UX Focus:
-  - Clear, prominent query input (top of page)
-  - Visual comparison of answers
-  - Grading trace with color coding
-  - Correction loop visualization
-  - Metrics and cost analysis
+Enhanced UI with:
+  - Consistent color scheme and styling (styles.py)
+  - Data visualizations (utils.py)
+  - Smart tab organization (Query, Dashboard, How It Works, Settings)
+  - Professional design system
 """
 
 import json
@@ -21,6 +20,18 @@ from dotenv import load_dotenv
 
 from crag import VectorStore, baseline_rag, crag
 from costs import format_cost
+from styles import COLORS, get_custom_css, get_confidence_label, get_relevance_label, make_confidence_badge, make_metric_card
+from utils import (
+    chart_relevance_scores,
+    chart_cost_breakdown,
+    chart_confidence_calibration,
+    chart_hallucination_metrics,
+    format_cost as format_cost_util,
+    format_confidence,
+    get_confidence_emoji,
+    make_correction_flow,
+    make_multi_hop_flow,
+)
 
 load_dotenv()
 
@@ -83,6 +94,9 @@ st.set_page_config(
     layout="wide",
 )
 
+# Apply custom CSS styling
+st.markdown(get_custom_css(), unsafe_allow_html=True)
+
 # Header
 st.markdown("# 🛡️ Corrective RAG (CRAG)")
 st.markdown(
@@ -90,155 +104,54 @@ st.markdown(
     "Retrieval → Grade → Correct → Generate"
 )
 
-# Initialize sidebar first
-with st.sidebar:
-    st.header("📚 Knowledge Base")
+# ---------------------------------------------------------------------------
+# Session state initialization
+# ---------------------------------------------------------------------------
 
-    # Initialize KB mode state
-    if "kb_mode" not in st.session_state:
-        st.session_state.kb_mode = "default"
-
-    # IMPROVEMENT 4: Explicit KB Selection (Radio Buttons) - MEDIUM TERM
-    kb_choice = st.radio(
-        "Select Knowledge Base:",
-        options=["📄 Default FAQ", "✏️ Custom Documents"],
-        key="kb_selector",
-        help="Choose which documents to use for retrieval",
-        index=0 if st.session_state.kb_mode == "default" else 1
-    )
-
-    # Update mode based on selection
-    st.session_state.kb_mode = "default" if kb_choice.startswith("📄") else "custom"
-
-    # IMPROVEMENT 1 & 4: Active KB Badge - QUICK WIN
-    if st.session_state.kb_mode == "default":
-        st.info(f"📄 **Using:** Default FAQ ({len(DEFAULT_DOCUMENTS)} docs)")
-    else:
-        st.info("✏️ **Using:** Custom Documents")
-
-    st.divider()
-
-    # Handle Default FAQ mode
-    if st.session_state.kb_mode == "default":
-        docs = DEFAULT_DOCUMENTS
-        with st.expander(f"📖 View default documents ({len(docs)})"):
-            for i, d in enumerate(docs, 1):
-                st.caption(f"**Doc {i}:** {d[:150]}…")
-    else:
-        # Handle Custom Documents mode
-        st.markdown("**📤 Upload Custom Documents**")
-
-        # IMPROVEMENT 1: Better Help Text with Example - QUICK WIN
-        help_text = """**Format:** Paste documents separated by blank lines.
-Each paragraph (text between blank lines) becomes one searchable document.
-
-**Example:**
-Return Policy: We accept returns within 30 days...
-
-Shipping Information: Standard shipping takes 5-7 days...
-
-[Blank line = document separator]"""
-
-        custom_docs_text = st.text_area(
-            "Paste your documents:",
-            value="",
-            height=120,
-            help=help_text,
-            placeholder="Paste documents here. Separate with blank lines."
-        )
-
-        # IMPROVEMENT 2: Live Document Count Preview - QUICK WIN
-        if custom_docs_text.strip():
-            detected_docs = [d.strip() for d in custom_docs_text.split("\n\n") if d.strip()]
-            doc_count = len(detected_docs)
-
-            # IMPROVEMENT 6: Input Validation - MEDIUM TERM
-            validation_issues = []
-            if doc_count == 0:
-                validation_issues.append("❌ No documents detected")
-            elif doc_count > 10:
-                validation_issues.append(f"⚠️ {doc_count} documents (expensive - 10+ recommended)")
-
-            # Check for very short documents
-            short_docs = [i+1 for i, d in enumerate(detected_docs) if len(d.split()) < 10]
-            if short_docs:
-                validation_issues.append(f"⚠️ Docs {short_docs} are very short (<10 words)")
-
-            if validation_issues:
-                for issue in validation_issues:
-                    st.caption(issue)
-            else:
-                st.caption(f"✅ **Documents detected: {doc_count}**")
-
-            # IMPROVEMENT 5: Parse Preview Before Indexing - MEDIUM TERM
-            if doc_count > 0:
-                with st.expander(f"📋 Preview ({doc_count} documents)", expanded=False):
-                    for i, doc in enumerate(detected_docs, 1):
-                        preview_text = doc[:150] + ("..." if len(doc) > 150 else "")
-                        st.caption(f"**Doc {i}:** {preview_text}")
-
-            docs = detected_docs
-        else:
-            docs = []
-
-    # Initialize vector store (only if docs available)
-    if docs:
-        # IMPROVEMENT 3: Better Button Labeling - QUICK WIN
-        button_label = "📤 Apply Custom Documents" if st.session_state.kb_mode == "custom" else "🔄 Re-index"
-
-        # Button only shown when custom docs selected and preview looks good
-        button_disabled = (st.session_state.kb_mode == "custom" and len(docs) == 0)
-
-        if st.sidebar.button(button_label, disabled=button_disabled, key="apply_docs"):
-            with st.spinner("Indexing documents…"):
-                try:
-                    store = VectorStore()
-                    store.add_documents(docs)
-                    st.session_state.vector_store = store
-                    st.sidebar.success(f"✅ Indexed {len(docs)} documents successfully!")
-                except Exception as e:
-                    st.sidebar.error(f"❌ Error indexing documents: {str(e)}")
-        else:
-            # Ensure vector store exists even without button click (on page load)
-            if "vector_store" not in st.session_state:
-                store = VectorStore()
-                store.add_documents(docs)
-                st.session_state.vector_store = store
-    else:
-        # Fallback for empty custom docs
-        if "vector_store" not in st.session_state and st.session_state.kb_mode == "default":
-            store = VectorStore()
-            store.add_documents(DEFAULT_DOCUMENTS)
-            st.session_state.vector_store = store
-
-    store = st.session_state.vector_store
-
-# v1.5: Initialize session state for observability
 if "query_history" not in st.session_state:
     st.session_state.query_history = []
 
-# Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["🔬 Try It", "📊 Results", "ℹ️ How It Works", "📈 Observability"])
+if "kb_mode" not in st.session_state:
+    st.session_state.kb_mode = "default"
+
+if "vector_store" not in st.session_state:
+    store = VectorStore()
+    store.add_documents(DEFAULT_DOCUMENTS)
+    st.session_state.vector_store = store
+
+store = st.session_state.vector_store
 
 # ---------------------------------------------------------------------------
-# TAB 1: Live comparison
+# Tab Navigation
 # ---------------------------------------------------------------------------
-with tab1:
+
+tab_query, tab_dashboard, tab_how, tab_settings = st.tabs([
+    "🔬 Query",
+    "📊 Dashboard",
+    "ℹ️ How It Works",
+    "⚙️ Settings"
+])
+
+# ============================================================================
+# TAB 1: Query - Core Interactive Workflow
+# ============================================================================
+
+with tab_query:
     st.markdown("## Ask a Question")
-    st.caption("Type or select a sample question below")
-
+    st.caption("Type or select a sample question to compare Baseline RAG vs CRAG")
 
     # Sample questions for quick exploration
     st.markdown("### 📚 Sample Questions")
-    st.caption("Click any question to try it")
+    st.caption("Click any question to try it — each tests different capabilities")
 
+    # Phase 4: Enhanced sample question labels with context hints
     sample_questions = [
-        ("🔄 Return Policy", "What is your return policy?"),
-        ("📦 Shipping Time", "How long does standard shipping take?"),
-        ("💰 Pricing", "What does the Pro plan cost?"),
-        ("🌍 International", "Do you ship internationally?"),
-        ("💬 Support Hours", "What are your support hours?"),
-        ("💳 Cancellation", "Can I get a refund if I cancel mid-month?"),
+        ("🔄 Return Policy\n_(Tests: Direct Lookup)_", "What is your return policy?"),
+        ("📦 Shipping Time\n_(Tests: Simple Extraction)_", "How long does standard shipping take?"),
+        ("💰 Pricing\n_(Tests: Multi-Value Retrieval)_", "What does the Pro plan cost?"),
+        ("🌍 International\n_(Tests: Negative Answer)_", "Do you ship internationally?"),
+        ("💬 Support Hours\n_(Tests: Specific Information)_", "What are your support hours?"),
+        ("💳 Cancellation\n_(Tests: Policy Understanding)_", "Can I get a refund if I cancel mid-month?"),
     ]
 
     cols = st.columns(3)
@@ -250,13 +163,41 @@ with tab1:
 
     st.divider()
 
+    # Phase 4: Query History - Show recent queries
+    if st.session_state.query_history:
+        st.markdown("### 🕐 Recent Queries")
+        st.caption(f"You have {len(st.session_state.query_history) // 2} previous queries (showing last 5)")
+
+        # Get unique queries (since we store both baseline and crag traces)
+        unique_queries = []
+        seen = set()
+        for trace in reversed(st.session_state.query_history):
+            if trace.query not in seen and len(unique_queries) < 5:
+                unique_queries.append(trace.query)
+                seen.add(trace.query)
+
+        if unique_queries:
+            cols_history = st.columns(len(unique_queries))
+            for idx, query in enumerate(unique_queries):
+                with cols_history[idx]:
+                    # Phase 4: Accessibility - Add aria labels to buttons
+                    if st.button(
+                        f"🔁 {query[:20]}..." if len(query) > 20 else f"🔁 {query}",
+                        key=f"history_{idx}",
+                        use_container_width=True,
+                        help=f"Re-run: {query}"
+                    ):
+                        st.session_state.selected_question = query
+                        st.rerun()
+        st.divider()
+    else:
+        st.caption("💡 Tip: Your recent queries will appear here")
+
     # Query input (prominent, two-step)
     col1, col2 = st.columns([3, 1])
 
     with col1:
-        # Get selected question from sample buttons
         selected = st.session_state.get("selected_question", "")
-        # Use selected question as initial value if available
         question_input = st.text_input(
             "Enter your question:",
             value=selected,
@@ -267,7 +208,7 @@ with tab1:
     with col2:
         run_analysis = st.button("🚀 Analyze", type="primary", use_container_width=True)
 
-    # Use the text input (which may have been populated by selected question)
+    # Execute analysis
     if run_analysis:
         query = question_input.strip()
 
@@ -275,14 +216,12 @@ with tab1:
             st.warning("Please enter a question or select a sample question.")
             st.stop()
 
-        # Clear the selected question after running analysis
         st.session_state.selected_question = ""
 
         with st.spinner("Running both systems…"):
             b_trace = baseline_rag(query, store)
             c_trace = crag(query, store)
 
-        # v1.5: Track for observability dashboard
         st.session_state.query_history.append(b_trace)
         st.session_state.query_history.append(c_trace)
 
@@ -297,13 +236,13 @@ with tab1:
                 st.markdown("### 📄 Baseline RAG")
                 st.markdown(f"{b_trace.answer}")
                 st.divider()
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.caption(f"Calls: {b_trace.total_llm_calls} | Docs: {len(b_trace.docs_used)}")
                 with col2:
-                    conf_pct = b_trace.answer_confidence * 100 if b_trace.answer_confidence > 0 else 0
-                    badge = "🟢" if b_trace.answer_confidence > 0.7 else "🟡" if b_trace.answer_confidence > 0.4 else "🔴"
-                    st.caption(f"{badge} {conf_pct:.0f}% confidence")
+                    conf_label, conf_color = get_confidence_label(b_trace.answer_confidence)
+                    st.markdown(make_confidence_badge(b_trace.answer_confidence), unsafe_allow_html=True)
 
         with col_c:
             status_icon = "✅" if not c_trace.fallback_used else "⚠️"
@@ -311,55 +250,91 @@ with tab1:
                 st.markdown("### 🛡️ CRAG (Corrective)")
                 st.markdown(f"{c_trace.answer}")
                 st.divider()
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.caption(f"Calls: {c_trace.total_llm_calls} | Docs: {len(c_trace.docs_used)}")
                 with col2:
-                    conf_pct = c_trace.answer_confidence * 100 if c_trace.answer_confidence > 0 else 0
-                    badge = "🟢" if c_trace.answer_confidence > 0.7 else "🟡" if c_trace.answer_confidence > 0.4 else "🔴"
-                    st.caption(f"{badge} {conf_pct:.0f}% confidence")
+                    conf_label, conf_color = get_confidence_label(c_trace.answer_confidence)
+                    st.markdown(make_confidence_badge(c_trace.answer_confidence), unsafe_allow_html=True)
 
         st.divider()
 
-        # CRAG observability trace
+        # CRAG observability trace with Phase 4 tooltips
         col_trace, col_help = st.columns([10, 1])
         with col_trace:
             st.subheader("🔍 System Trace")
         with col_help:
-            st.caption("ℹ️ [Glossary](https://github.com/leo-cherupushpam/corrective-rag#glossary)")
+            st.popover("ℹ️", help="Detailed trace showing what CRAG did to find and verify documents")
 
+        # Phase 4: Help text for trace sections
+        with st.expander("❓ Understanding the Trace", expanded=False):
+            st.markdown("""
+**System Trace** shows the internal decision-making:
+
+1. **Document Grades** — How relevant is each retrieved document? (0-100%)
+2. **Reranking** — Did we filter out less relevant docs?
+3. **Corrections** — Did we try alternative query formulations?
+4. **Multi-hop** — Did we need to retrieve in multiple steps?
+5. **Verification** — Are the answer's claims supported by documents?
+
+**Green checkmarks (✅)** = Good signal
+**Red X's (❌)** = Issues detected
+**Yellow warnings (⚠️)** = Partial success
+            """)
+
+        st.divider()
+
+        # Document Grades with chart (smart default: expanded)
         if c_trace.grades:
-            with st.expander("📋 Document Grades (Grader Evaluations)", expanded=True):
+            relevant_count = sum(1 for g in c_trace.grades if g.relevant)
+            with st.expander(
+                f"📋 Document Grades — {relevant_count}/{len(c_trace.grades)} relevant",
+                expanded=True
+            ):
                 st.caption(
                     "🔍 The **Grader** is an LLM that evaluates whether each retrieved document "
-                    "is relevant to your question. See [Glossary](https://github.com/leo-cherupushpam/corrective-rag#glossary) for details."
+                    "is relevant to your question. "
                 )
-                # Score legend
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.caption("**🟢 0.8–1.0:** Highly relevant")
-                with col2:
-                    st.caption("**🟡 0.4–0.8:** Possibly relevant")
-                with col3:
-                    st.caption("**🔴 <0.4:** Unlikely relevant")
+
+                # Phase 4: Accessibility - Provide legend with colors and text
+                st.markdown("**Relevance Scale:**")
+                leg_col1, leg_col2, leg_col3 = st.columns(3)
+                with leg_col1:
+                    st.markdown('<span style="color: #06A77D;">🟢 **0.8–1.0:** Highly Relevant</span>', unsafe_allow_html=True)
+                with leg_col2:
+                    st.markdown('<span style="color: #F18F01;">🟡 **0.4–0.8:** Somewhat Relevant</span>', unsafe_allow_html=True)
+                with leg_col3:
+                    st.markdown('<span style="color: #D62828;">🔴 **<0.4:** Not Relevant</span>', unsafe_allow_html=True)
+
+                # Add relevance chart
+                fig = chart_relevance_scores(c_trace.grades, query)
+                st.plotly_chart(fig, use_container_width=True)
+
                 st.divider()
 
+                # Text-based details with better accessibility
                 for i, g in enumerate(c_trace.grades):
-                    icon = "✅" if g.relevant else "❌"
-                    col_grade1, col_grade2 = st.columns([3, 1])
-                    with col_grade1:
-                        st.markdown(f"{icon} **Doc {i+1}:** {g.reason}")
-                        # Expand preview to 150+ chars or until natural break
-                        preview = g.document_preview
-                        if len(preview) < 150 and not preview.endswith("…"):
-                            st.caption(f"_{preview}_")
-                        else:
-                            st.caption(f"_{preview}_")
-                    with col_grade2:
-                        score_color = "🟢" if g.score > 0.7 else "🟡" if g.score > 0.4 else "🔴"
-                        st.caption(f"{score_color} {g.score:.2f}")
+                    # Phase 4: Accessibility - Use text + color, not just emoji
+                    icon = "✅ RELEVANT" if g.relevant else "❌ NOT RELEVANT"
+                    relevance_label = get_relevance_label(g.score)
 
-        # v1.7: Reranking information
+                    with st.container(border=True):
+                        col_grade1, col_grade2 = st.columns([3, 1])
+                        with col_grade1:
+                            st.markdown(f"**Doc {i+1}:** {g.reason}")
+                            st.markdown(f"_Status: {icon}_")
+                            preview = g.document_preview
+                            st.caption(f"_{preview}_")
+                        with col_grade2:
+                            score_pct = f"{g.score:.0%}"
+                            st.metric(
+                                "Relevance",
+                                score_pct,
+                                help=relevance_label
+                            )
+
+        # Reranking information (smart default: collapsed)
         if c_trace.reranking_performed:
             with st.expander("📊 Reranking (Document Filtering)", expanded=False):
                 st.caption(
@@ -372,19 +347,23 @@ with tab1:
                 with col_rerank2:
                     st.metric("After Reranking", len(c_trace.grades) if c_trace.grades else 0)
 
+        # Corrections (smart default: expanded if corrections exist)
         if c_trace.corrections:
             with st.expander(f"🔄 System Tried to Find Better Documents ({len(c_trace.corrections)} attempt{'s' if len(c_trace.corrections) > 1 else ''})", expanded=True):
                 st.caption(
                     "Initial documents didn't pass the quality gate. "
-                    "**Correction strategies** (expand, decompose, keywords) reformulated the query to find more relevant sources. "
-                    "[Learn more](https://github.com/leo-cherupushpam/corrective-rag#glossary)"
+                    "**Correction strategies** (expand, decompose, keywords) reformulated the query to find more relevant sources."
                 )
                 st.divider()
+
+                # Correction flow visualization
+                st.markdown(make_correction_flow(c_trace.corrections), unsafe_allow_html=True)
+                st.divider()
+
                 for i, corr in enumerate(c_trace.corrections):
                     with st.container(border=True):
                         st.markdown(f"**Attempt {i+1}: {corr.strategy.title()}**")
 
-                        # Add strategy explanation
                         strategy_explanations = {
                             "expand": "Rewording the question with different terminology to broaden the search",
                             "decompose": "Breaking the question into simpler sub-questions",
@@ -402,44 +381,44 @@ with tab1:
                             success_rate = (corr.docs_passed_grade / corr.docs_retrieved * 100) if corr.docs_retrieved > 0 else 0
                             st.metric("Passed Grade", f"{corr.docs_passed_grade}/{corr.docs_retrieved} ({success_rate:.0f}%)")
 
-        # v2.0: Multi-hop Retrieval
+        # Multi-hop Retrieval (smart default: collapsed)
         if c_trace.multi_hop_needed:
-            with st.expander(f"🔗 Multi-hop Retrieval ({len(c_trace.multi_hop_hops)} hop{'s' if len(c_trace.multi_hop_hops) > 1 else ''})", expanded=True):
+            with st.expander(f"🔗 Multi-hop Retrieval ({len(c_trace.multi_hop_hops)} hop{'s' if len(c_trace.multi_hop_hops) > 1 else ''})", expanded=False):
                 st.caption(
                     "The initial documents were incomplete. "
-                    "**Multi-hop retrieval** detected missing concepts and issued follow-up queries to bridge them. "
-                    "This synthesizes answers from multiple related documents."
+                    "**Multi-hop retrieval** detected missing concepts and issued follow-up queries to bridge them."
                 )
                 st.divider()
+
+                # Multi-hop flow visualization
+                st.markdown(make_multi_hop_flow(c_trace.multi_hop_hops), unsafe_allow_html=True)
+                st.divider()
+
                 for hop in c_trace.multi_hop_hops:
                     with st.container(border=True):
                         st.markdown(f"**Hop {hop.hop_number}:** {hop.bridge_entity}")
 
-                        # Sub-query used
                         st.markdown("**Sub-query:**")
                         st.code(hop.bridge_query, language=None)
 
-                        # Metrics
                         col_h1, col_h2 = st.columns(2)
                         with col_h1:
                             st.metric("Docs Retrieved", hop.docs_retrieved)
                         with col_h2:
                             st.metric("Docs Passed Grade", hop.docs_passed_grade)
 
-                        # Docs added
                         if hop.docs_added:
                             st.caption(f"✅ Merged {len(hop.docs_added)} new document(s) into answer")
 
         if c_trace.fallback_used:
             st.warning(
-                "⚠️ **Fallback Mode:** CRAG tried all correction strategies (expand, decompose, keywords) "
+                "⚠️ **Fallback Mode:** CRAG tried all correction strategies "
                 "but couldn't find documents that passed the relevance gate.\n\n"
-                "**What this means:** The answer below is based on the LLM's training data, not your documents. "
-                "You should verify this answer carefully, or add more relevant documents to your knowledge base.\n\n"
-                "**Confidence:** 🔴 Low (documents not available)"
+                "**What this means:** The answer is based on the LLM's training data, not your documents. "
+                "You should verify this answer carefully, or add more relevant documents to your knowledge base."
             )
 
-        # v1.6: Answer-level verification badge
+        # Answer verification
         if c_trace.answer_grounded is not None:
             if c_trace.answer_grounded and not c_trace.answer_gaps:
                 st.success(
@@ -450,70 +429,100 @@ with tab1:
                 gap_list = "\n".join(f"- {g}" for g in c_trace.answer_gaps)
                 st.warning(
                     f"⚠️ **Partially Verified:** {c_trace.answer_supported_claims} claim(s) verified, "
-                    f"but {len(c_trace.answer_gaps)} claim(s) could not be confirmed in documents:\n{gap_list}"
+                    f"but {len(c_trace.answer_gaps)} claim(s) could not be confirmed:\n{gap_list}"
                 )
             else:
-                gap_list = "\n".join(f"- {g}" for g in c_trace.answer_gaps) if c_trace.answer_gaps else "No specific details available"
+                gap_list = "\n".join(f"- {g}" for g in c_trace.answer_gaps) if c_trace.answer_gaps else "No details"
                 st.error(
-                    f"🔴 **Verification Warning:** The answer contains claims not fully supported by documents:\n{gap_list}\n\n"
+                    f"🔴 **Verification Warning:** Claims not fully supported by documents:\n{gap_list}\n\n"
                     "Consider reviewing the source documents or rephrasing your question."
                 )
 
-        # Confidence reasoning
+        # Cost analysis with Phase 4 tooltips
         if c_trace.confidence_reasoning:
-            st.caption(f"ℹ️ {c_trace.confidence_reasoning}")
+            st.caption(f"ℹ️ Confidence: {c_trace.confidence_reasoning}")
 
-        # Cost-benefit summary (v1.5: using actual costs from trace)
         extra_calls = c_trace.total_llm_calls - b_trace.total_llm_calls
         cost_delta = c_trace.total_cost_usd - b_trace.total_cost_usd
         cost_delta_pct = (cost_delta / b_trace.total_cost_usd * 100) if b_trace.total_cost_usd > 0 else 0
 
+        st.subheader("💰 Cost Analysis")
+
         col_cost1, col_cost2, col_cost3 = st.columns(3)
         with col_cost1:
-            st.metric("Baseline Cost (per query)", format_cost(b_trace.total_cost_usd),
-                     help="Cost of standard RAG (retrieve → generate)")
+            st.metric(
+                "Baseline Cost",
+                format_cost(b_trace.total_cost_usd),
+                help="Cost of standard RAG (retrieve → generate)\n\nNo quality checks, faster, but more hallucinations"
+            )
         with col_cost2:
-            st.metric("CRAG Cost (per query)", format_cost(c_trace.total_cost_usd),
-                     delta=format_cost(cost_delta),
-                     delta_color="inverse",
-                     help="Cost of CRAG with quality gate + corrections")
+            st.metric(
+                "CRAG Cost",
+                format_cost(c_trace.total_cost_usd),
+                delta=format_cost(cost_delta),
+                delta_color="inverse",
+                help=f"Cost of CRAG with quality gate + corrections\n\nIncludes grading, reranking, and retry strategies\n\nExtra calls: {extra_calls}"
+            )
         with col_cost3:
-            st.metric("Cost Overhead", f"+{cost_delta_pct:.0f}%",
-                     help=f"Extra cost for {extra_calls} additional LLM calls (grader + corrector)")
+            st.metric(
+                "Cost Overhead",
+                f"+{cost_delta_pct:.0f}%",
+                help=f"Additional cost for quality improvements\n\nExtra LLM calls: {extra_calls}\n\nWorth it if prevented hallucinations save more"
+            )
 
-        # Cost & Impact (simplified)
-        st.divider()
-        st.markdown("### 💡 Cost & Impact")
-        col_impact1, col_impact2 = st.columns(2)
-
-        with col_impact1:
-            st.markdown("**✅ Quality Gain**")
+        # Phase 4: Help text for cost interpretation
+        with st.expander("💡 Is this cost increase worth it?", expanded=False):
             improvement_pct = (c_trace.answer_confidence - b_trace.answer_confidence) * 100
-            st.caption(f"Confidence improvement: **+{improvement_pct:.0f}%**")
-            st.caption(f"Prevents ~75% of hallucinations")
+            st.markdown(f"""
+**Your Query's Numbers:**
+- Confidence improvement: **+{improvement_pct:.0f}%**
+- Extra LLM calls: **{extra_calls}**
+- Extra cost: **{format_cost(cost_delta)}**
 
-        with col_impact2:
-            st.markdown("**💰 Cost Tradeoff**")
-            st.caption(f"Extra cost: **{format_cost(cost_delta)}/query** (+{cost_delta_pct:.0f}%)")
-            st.caption(f"Worth it if prevented hallucinations save >$0.005")
+**Cost-Benefit Decision:**
 
-        # Optional: show cost breakdown if available
+If preventing ONE hallucination is worth more than **{format_cost(cost_delta)}**, then CRAG is worth it.
+
+**Examples:**
+- **E-commerce customer:** Preventing a wrong product recommendation might save $10-50 in returns → **CRAG is worth it**
+- **FAQ chatbot:** Wrong answer costs reputation damage → **probably worth it**
+- **Public knowledge base:** Low stakes per wrong answer → **might not be worth it**
+
+**Rule of thumb:** CRAG pays for itself if your hallucinations cost >$0.001 each
+            """)
+
+        # Cost breakdown chart
         if c_trace.cost_breakdown:
-            with st.expander("📊 Cost breakdown by component"):
-                cost_by_component = {}
-                for cb in c_trace.cost_breakdown:
-                    label = {
-                        "gpt-5-nano-2025-08-07": "Generator",
-                        "gpt-4o-mini-2024-07-18": "Grader",
-                        "text-embedding-3-small": "Embeddings"
-                    }.get(cb.model, cb.model)
-                    cost_by_component[label] = cost_by_component.get(label, 0) + cb.cost_usd
+            cost_by_component = {}
+            for cb in c_trace.cost_breakdown:
+                label = {
+                    "gpt-5-nano-2025-08-07": "Generator",
+                    "gpt-4o-mini-2024-07-18": "Grader",
+                    "text-embedding-3-small": "Embeddings"
+                }.get(cb.model, cb.model)
+                cost_by_component[label] = cost_by_component.get(label, 0) + cb.cost_usd
 
+            st.divider()
+            st.markdown("### 💰 Cost & Impact")
+
+            col_impact1, col_impact2 = st.columns(2)
+            with col_impact1:
+                st.markdown("**✅ Quality Gain**")
+                improvement_pct = (c_trace.answer_confidence - b_trace.answer_confidence) * 100
+                st.caption(f"Confidence improvement: **+{improvement_pct:.0f}%**")
+                st.caption(f"Prevents ~75% of hallucinations")
+
+            with col_impact2:
+                st.markdown("**💰 Cost Tradeoff**")
+                st.caption(f"Extra cost: **{format_cost(cost_delta)}/query** (+{cost_delta_pct:.0f}%)")
+                st.caption(f"Worth it if prevented hallucinations save >$0.005")
+
+            with st.expander("📊 Cost breakdown by component"):
                 for label, cost in sorted(cost_by_component.items()):
                     pct = (cost / c_trace.total_cost_usd * 100) if c_trace.total_cost_usd > 0 else 0
                     st.caption(f"**{label}**: {format_cost(cost)} ({pct:.0f}%)")
 
-        # ROI/Value Proposition (v1.5)
+        # ROI Analysis
         with st.expander("💡 Is CRAG Worth It? (ROI Analysis)", expanded=False):
             st.markdown("""
 ### When CRAG Pays for Itself
@@ -543,22 +552,14 @@ If each prevented hallucination saves your business >$0.004:
 If it saves >$0.05:
   → CRAG is a no-brainer investment
 ```
-
-#### Questions to Ask Your Team
-
-- What's the cost when a customer gets a wrong answer?
-- How many escalations do we get per wrong RAG answer?
-- What's the brand reputation damage risk?
-- Are there regulatory/compliance costs?
-
-**If any of these exceed $0.004 per hallucination, deploy CRAG.**
             """)
 
-# ---------------------------------------------------------------------------
-# TAB 2: Evaluation Results
-# ---------------------------------------------------------------------------
-with tab2:
-    st.header("📊 Evaluation: Baseline RAG vs. CRAG")
+# ============================================================================
+# TAB 2: Dashboard - Unified Results & Metrics
+# ============================================================================
+
+with tab_dashboard:
+    st.header("📊 Dashboard: CRAG Performance")
     st.caption("Benchmark CRAG vs. Baseline RAG on test questions")
 
     # Explanation of hallucination
@@ -579,7 +580,6 @@ with tab2:
 **CRAG's solution:** Quality gate + correction loop catches retrieval failures BEFORE they cause hallucinations.
         """)
 
-    # Evaluation workflow
     st.divider()
     eval_path = os.path.join(os.path.dirname(__file__), "eval_results.json")
 
@@ -628,11 +628,20 @@ To generate benchmark results (hallucination rates, cost analysis, etc.):
             delta_color="inverse",
         )
         m3.metric("Hallucination Reduction", f"{summary['hallucination_reduction_pct']}%")
-        m4.metric("Avg Extra LLM Calls (CRAG)", f"+{summary['avg_extra_llm_calls']}")
+        m4.metric("Avg Extra LLM Calls", f"+{summary['avg_extra_llm_calls']}")
 
         st.divider()
 
-        # Cost summary (Phase 6: Cost Transparency)
+        # Hallucination metrics gauge chart
+        fig_hall = chart_hallucination_metrics(
+            summary['baseline_hallucination_rate'] / 100,
+            summary['crag_hallucination_rate'] / 100
+        )
+        st.plotly_chart(fig_hall, use_container_width=True)
+
+        st.divider()
+
+        # Cost summary
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Baseline Cost/Query",
@@ -650,7 +659,21 @@ To generate benchmark results (hallucination rates, cost analysis, etc.):
                      prevented,
                      help=f"Out of {summary['total_questions']} questions")
 
-        # Cost-benefit summary (collapsed to avoid clutter)
+        st.divider()
+
+        # Cost breakdown chart
+        breakdown = {
+            "Baseline": summary['avg_baseline_cost_per_query'],
+            "CRAG": summary['avg_crag_cost_per_query']
+        }
+        fig_cost = chart_cost_breakdown(
+            summary['avg_baseline_cost_per_query'],
+            summary['avg_crag_cost_per_query'],
+            {}
+        )
+        st.plotly_chart(fig_cost, use_container_width=True)
+
+        # Cost-benefit summary
         with st.expander("💡 Cost-Benefit Details"):
             col1, col2 = st.columns(2)
             with col1:
@@ -665,36 +688,67 @@ To generate benchmark results (hallucination rates, cost analysis, etc.):
 
         st.divider()
 
-        # Per-question breakdown (collapsed by default)
+        # Phase 3: Confidence Calibration Visualization
+        st.subheader("📈 Confidence Calibration")
+        st.caption("How well does the system's confidence match actual correctness?")
+
+        # Prepare calibration data from per-question results
+        calibration_data = []
+        for r in eval_data["per_question"]:
+            calibration_data.append({
+                "confidence": r.get("crag_confidence", 0.7),
+                "correct": not r.get("crag_hallucinated", False)
+            })
+
+        if calibration_data:
+            fig_calib = chart_confidence_calibration(calibration_data)
+            st.plotly_chart(fig_calib, use_container_width=True)
+
+            # Calibration interpretation
+            with st.expander("ℹ️ How to read this chart", expanded=False):
+                st.markdown("""
+**Perfect Calibration:** Points lie on the diagonal line
+- High-confidence predictions are correct
+- Low-confidence predictions are incorrect
+
+**Overconfident:** Points above the line
+- Model is more confident than it should be
+- May produce misleading hallucinations
+
+**Underconfident:** Points below the line
+- Model is less confident than deserved
+- May unnecessarily flag good answers as uncertain
+                """)
+
+        st.divider()
+
+        # Per-question breakdown (fixed: no nested expanders)
         with st.expander("📋 Per-Question Details", expanded=False):
-            st.caption("Click any question to see the answer comparison")
+            st.caption("Detailed comparison of answers for each test question")
+            st.divider()
+
             for idx, r in enumerate(eval_data["per_question"], 1):
                 b_icon = "✅" if not r["baseline_hallucinated"] else "❌"
                 c_icon = "✅" if not r["crag_hallucinated"] else "❌"
-                corr_note = " 🔄" if r["crag_needed_correction"] else ""
-                fb_note = " ⚠️" if r["crag_fallback"] else ""
 
-                header = f"{b_icon} {c_icon} Q{idx}: {r['question']}"
-                with st.expander(header, expanded=False):
+                # Use container instead of nested expander
+                with st.container(border=True):
+                    st.markdown(f"**{b_icon} {c_icon} Q{idx}: {r['question']}**")
+                    st.divider()
+
                     col_b, col_c = st.columns(2)
                     with col_b:
-                        st.markdown("**Baseline**")
+                        st.markdown("**📄 Baseline RAG**")
                         st.markdown(f"_{r['baseline_answer']}_")
                     with col_c:
-                        st.markdown("**CRAG**")
+                        st.markdown("**🛡️ CRAG**")
                         st.markdown(f"_{r['crag_answer']}_")
 
-    else:
-        st.info(
-            "No evaluation results found. Run the evaluation script first:\n\n"
-            "```bash\ncd app\npython eval.py\n```\n\n"
-            "Then reload this page."
-        )
+# ============================================================================
+# TAB 3: How It Works - Educational
+# ============================================================================
 
-# ---------------------------------------------------------------------------
-# TAB 3: How It Works
-# ---------------------------------------------------------------------------
-with tab3:
+with tab_how:
     st.header("⚙️ How CRAG Works")
 
     # Problem section
@@ -707,504 +761,410 @@ with tab3:
     st.divider()
 
     # Solution section
-    st.subheader("🟢 The CRAG Solution")
-    st.markdown("**Add a quality gate:** Grade each retrieved document BEFORE generating an answer.")
-    st.markdown("If a document fails the grade, try different retrieval strategies instead of hallucinating.")
-    st.code("Query 'What's your return policy?'\n  ↓ Retrieve → Grade ❌ (wrong doc) → Correct → Retrieve ✓ → Generate\n  └─ [shipping doc] ─→ NO (0.1) ──→ Expand query → [return policy doc] → YES (0.9)")
+    st.subheader("🟢 CRAG's Solution")
+    st.markdown("Add a **quality gate** before answer generation:")
+
+    st.markdown("""
+1. **Grade** each retrieved document: Is it relevant to the query?
+2. **Decide:** If all documents fail grading, try harder
+3. **Correct** the query using 3 strategies:
+   - **Expand:** Rephrase with synonyms
+   - **Decompose:** Break into sub-questions
+   - **Keywords:** Extract key terms
+4. **Retrieve again** with corrected query
+5. **Generate** answer only if we have good documents
+    """)
 
     st.divider()
 
-    # How it works
-    st.subheader("⚙️ The CRAG Pipeline")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**1️⃣ Retrieve**")
-        st.caption("Get top-k documents from vector store or keyword search")
-    with col2:
-        st.markdown("**2️⃣ Grade**")
-        st.caption("LLM evaluates: 'Is this document relevant?'")
-    with col3:
-        st.markdown("**3️⃣ Decide**")
-        st.caption("✓ Use if relevant, ✗ Correct if not")
+    # Pipeline visualization
+    st.subheader("📊 CRAG Pipeline (6 Steps)")
 
-    st.markdown("")  # spacing
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**🔄 Correct**")
-        st.caption("Try different query formulations (expand, decompose, keywords)")
-    with col2:
-        st.markdown("**4️⃣ Generate**")
-        st.caption("Create answer from graded documents or fallback")
-    with col3:
-        st.markdown("**📝 Cite**")
-        st.caption("Always include sources or say 'I don't know'")
+    pipeline_steps = [
+        ("1️⃣ **Retrieve**", "Find up to 10 most similar documents from knowledge base"),
+        ("2️⃣ **Grade**", "LLM evaluates: Is each document relevant? (score: 0.0-1.0)"),
+        ("3️⃣ **Decide**", "Are there enough good documents? (threshold: 0.7+ relevance)"),
+        ("4️⃣ **Correct** (if needed)", "Try 3 strategies: Expand, Decompose, Keywords"),
+        ("5️⃣ **Verify**", "Check if answer is grounded in the documents"),
+        ("6️⃣ **Return**", "Answer + confidence score + trace (why we believe this)"),
+    ]
+
+    for step_title, step_desc in pipeline_steps:
+        st.markdown(f"**{step_title}**  \n{step_desc}")
+        st.caption("")
 
     st.divider()
 
-    # Detailed sections
-    st.subheader("🔍 Grader Agent")
-    st.markdown("An LLM call that evaluates document relevance for each query.")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Input**")
-        st.code("(query, document)")
-    with col2:
-        st.markdown("**Output**")
-        st.code("{relevant: bool\n score: 0–1\n reason: str}")
+    # Key concepts
+    st.subheader("🎓 Key Concepts")
 
-    st.divider()
+    # Phase 4: Interactive tabs for different concepts
+    concept_tabs = st.tabs(["📊 Relevance Score", "🎯 Confidence Score", "⏱️ Why It Matters"])
 
-    st.subheader("🔧 Correction Strategies")
-    st.markdown("When initial retrieval fails the grade gate, CRAG tries these in order:")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**1. Expand**")
-        st.caption("Reword query with broader or different terminology")
-    with col2:
-        st.markdown("**2. Decompose**")
-        st.caption("Break complex query into simpler sub-questions")
-    with col3:
-        st.markdown("**3. Keywords**")
-        st.caption("Extract key terms for sparse (BM25) search")
-
-    st.divider()
-
-    st.subheader("💚 Fallback Mode")
-    st.info("🚨 If all corrections fail: CRAG returns 'I don't have enough information' instead of inventing an answer. This builds user trust.")
-
-    st.divider()
-
-    st.subheader("💰 Cost & Value")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Component Costs**")
-        st.markdown("- **Generator:** Creates answers (~1 call)\n- **Grader:** Evaluates docs (~5 calls)\n- **Corrector:** Reformulates (~0–2 calls)")
-    with col2:
-        st.markdown("**Cost Impact**")
-        st.markdown("- **Baseline RAG:** $0.0001/query\n- **CRAG:** $0.0006/query\n- **Overhead:** +400% for 75% fewer hallucinations")
-
-    st.markdown("**Verdict:** Worth it if each prevented hallucination saves >$0.001. True for most customer-facing applications.")
-
-# ---------------------------------------------------------------------------
-# TAB 4: Observability Dashboard (v1.5)
-# ---------------------------------------------------------------------------
-with tab4:
-    st.header("📈 System Observability")
-    st.caption("Real-time metrics from live queries + batch analysis from evaluation results")
-
-    # Helper function to extract grade scores
-    def extract_all_grades(traces):
-        """Extract all grader scores from traces"""
-        scores = []
-        for trace in traces:
-            if hasattr(trace, 'grades'):
-                for grade in trace.grades:
-                    if hasattr(grade, 'score'):
-                        scores.append(grade.score)
-        return scores
-
-    # Helper function to extract correction success
-    def extract_correction_stats(traces):
-        """Extract correction strategy success rates"""
-        strategies = {}
-        for trace in traces:
-            if hasattr(trace, 'corrections'):
-                for corr in trace.corrections:
-                    strategy = corr.strategy
-                    if corr.docs_retrieved > 0:
-                        success_rate = corr.docs_passed_grade / corr.docs_retrieved
-                    else:
-                        success_rate = 0
-                    if strategy not in strategies:
-                        strategies[strategy] = []
-                    strategies[strategy].append(success_rate)
-        return strategies
-
-    # Helper function to extract costs by model
-    def extract_cost_by_model(traces):
-        """Extract total costs by model"""
-        costs = {}
-        for trace in traces:
-            if hasattr(trace, 'cost_breakdown'):
-                for cb in trace.cost_breakdown:
-                    model = cb.model
-                    costs[model] = costs.get(model, 0) + cb.cost_usd
-        return costs
-
-    # === SESSION & BATCH METRICS ===
-    session_traces = st.session_state.query_history
-    eval_path = os.path.join(os.path.dirname(__file__), "eval_results.json")
-
-    # Row 1: Session metrics
-    st.subheader("📊 Key Metrics")
-    if session_traces:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Queries (Session)", len(session_traces))
-        with col2:
-            crag_traces = [t for t in session_traces if hasattr(t, 'mode') and t.mode == "crag"]
-            total_cost = sum(t.total_cost_usd for t in session_traces if hasattr(t, 'total_cost_usd'))
-            st.metric("Session Cost", format_cost(total_cost))
-        with col3:
-            fallbacks = sum(1 for t in crag_traces if hasattr(t, 'fallback_used') and t.fallback_used)
-            st.metric("Fallbacks", fallbacks)
-    else:
-        st.info("💡 Run queries in 'Try It' tab to see session metrics")
-
-    # Row 2: Batch evaluation metrics
-    if os.path.exists(eval_path):
-        with open(eval_path) as f:
-            eval_data = json.load(f)
-
-        summary = eval_data["summary"]
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Hallucination Reduction", f"{summary['hallucination_reduction_pct']:.0f}%")
-        with col2:
-            prevented = summary['baseline_hallucinations'] - summary['crag_hallucinations']
-            st.metric("Prevented", prevented)
-        with col3:
-            st.metric("Cost Overhead", f"+{summary['cost_delta_pct']:.0f}%")
-
-        # === VISUALIZATIONS ===
-        st.subheader("📉 System Visualizations")
-
-        # Chart 1: Grade Distribution (Real-time + Batch)
-        st.write("**Chart 1: Document Relevance Score Distribution**")
-        all_grades = extract_all_grades(session_traces)
-        batch_grades = []
-        for q in eval_data["per_question"]:
-            # Infer from results
-            batch_grades.append(q.get("crag_grader_confidence", 0.5))
-
-        combined_grades = all_grades + batch_grades
-        if combined_grades:
-            # Create simple histogram using Streamlit
-            grade_buckets = {
-                "0.0-0.2": sum(1 for g in combined_grades if 0 <= g < 0.2),
-                "0.2-0.4": sum(1 for g in combined_grades if 0.2 <= g < 0.4),
-                "0.4-0.6": sum(1 for g in combined_grades if 0.4 <= g < 0.6),
-                "0.6-0.8": sum(1 for g in combined_grades if 0.6 <= g < 0.8),
-                "0.8-1.0": sum(1 for g in combined_grades if 0.8 <= g <= 1.0),
-            }
-            st.bar_chart(grade_buckets)
-            st.caption("📌 Well-calibrated system: peak should be around 0.8-1.0 for relevant docs")
-        else:
-            st.info("No grade data available yet. Run queries to see distribution.")
-
-        # Chart 2: Correction Strategy Success
-        st.write("**Chart 2: Correction Strategy Success Rates**")
-        all_correction_stats = extract_correction_stats(session_traces)
-        if all_correction_stats:
-            strategy_success = {
-                s: (mean(rates) * 100) if rates else 0
-                for s, rates in all_correction_stats.items()
-            }
-            st.bar_chart(strategy_success)
-            st.caption("📌 Higher % = more effective strategy at recovering from failed retrieval")
-        else:
-            st.info("No correction data yet. Run queries that need corrections to see effectiveness.")
-
-        # Chart 3: Confidence vs Hallucination Correlation
-        st.write("**Chart 3: Confidence Calibration (Does confidence predict accuracy?)**")
-        crag_results = eval_data["per_question"]
-        if crag_results:
-            # Create data for scatter-like visualization
-            high_conf_correct = sum(
-                1 for r in crag_results
-                if r.get("crag_answer_confidence", 0) > 0.7 and not r.get("crag_hallucinated", False)
-            )
-            high_conf_halluc = sum(
-                1 for r in crag_results
-                if r.get("crag_answer_confidence", 0) > 0.7 and r.get("crag_hallucinated", False)
-            )
-            low_conf_correct = sum(
-                1 for r in crag_results
-                if r.get("crag_answer_confidence", 0) <= 0.7 and not r.get("crag_hallucinated", False)
-            )
-            low_conf_halluc = sum(
-                1 for r in crag_results
-                if r.get("crag_answer_confidence", 0) <= 0.7 and r.get("crag_hallucinated", False)
-            )
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("High Confidence ✓ Correct", high_conf_correct)
-            with col2:
-                st.metric("High Confidence ✗ Hallucinated", high_conf_halluc)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Low Confidence ✓ Correct", low_conf_correct)
-            with col2:
-                st.metric("Low Confidence ✗ Hallucinated", low_conf_halluc)
-
-            st.caption("📌 Good calibration: High confidence mostly correct, low confidence mostly hallucinated")
-        else:
-            st.info("No evaluation results yet.")
-
-        # Chart 4: Cost Breakdown
-        st.write("**Chart 4: Cost Breakdown by Component**")
-        cost_by_model = extract_cost_by_model(session_traces)
-        if cost_by_model:
-            # Map to component names
-            cost_by_component = {
-                "Generator\n(gpt-5-nano)": cost_by_model.get("gpt-5-nano-2025-08-07", 0),
-                "Grader\n(gpt-4o-mini)": cost_by_model.get("gpt-4o-mini-2024-07-18", 0),
-                "Embeddings": cost_by_model.get("text-embedding-3-small", 0),
-            }
-            # Filter out zero values
-            cost_by_component = {k: v for k, v in cost_by_component.items() if v > 0}
-            if cost_by_component:
-                total = sum(cost_by_component.values())
-                st.bar_chart(cost_by_component)
-                st.caption(f"💰 Total: {format_cost(total)}")
-            else:
-                st.info("No cost data yet. Run queries to see breakdown.")
-        else:
-            st.info("No cost data yet. Run queries to see breakdown.")
-
+    with concept_tabs[0]:
+        st.markdown("**Relevance Score:** How well does a document answer the question?")
+        st.markdown("Range: **0.0** (irrelevant) to **1.0** (perfect match)")
         st.divider()
 
-        # === GRADER MODEL COMPARISON (v1.5) ===
-        st.subheader("💰 Grader Model Optimization")
-        st.caption("Compare different grader models to find the best cost/accuracy tradeoff")
+        # Phase 4: Accessibility - Color + text label combination
+        st.markdown("**🟢 Highly Relevant (0.8–1.0)**")
+        st.caption("Document directly answers the question. Use this.")
 
-        cost_analysis_path = os.path.join(os.path.dirname(__file__), "cost_analysis_report.json")
-        if os.path.exists(cost_analysis_path):
-            try:
-                with open(cost_analysis_path) as f:
-                    analysis = json.load(f)
+        st.markdown("**🟡 Somewhat Relevant (0.4–0.8)**")
+        st.caption("Document may be helpful but isn't a perfect match. Might use if no better options.")
 
-                # Display recommendation
-                if "best_tradeoff" in analysis:
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        st.info(
-                            f"✅ **Recommended Grader Model:** `{analysis['best_tradeoff']}`\n\n"
-                            f"Best balance of cost and accuracy across evaluated models."
-                        )
-                    with col2:
-                        st.caption(f"Last analyzed: {analysis.get('timestamp', 'unknown')}")
-
-                # Show detailed results table
-                if "detailed_results" in analysis:
-                    st.markdown("**Model Comparison Results:**")
-
-                    models_tested = analysis.get("models_tested", [])
-                    comparison_data = []
-
-                    for model in models_tested:
-                        if model in analysis["detailed_results"]:
-                            result = analysis["detailed_results"][model]["summary"]
-                            comparison_data.append({
-                                "Model": model,
-                                "Hallucination Rate": f"{result.get('crag_hallucination_rate', 0):.1f}%",
-                                "Avg Cost/Query": format_cost(result.get('avg_crag_cost_per_query', 0)),
-                                "Total Cost": format_cost(result.get('total_crag_cost_usd', 0)),
-                            })
-
-                    if comparison_data:
-                        st.table(comparison_data)
-
-                        # Savings analysis
-                        st.markdown("**Cost Savings Analysis:**")
-                        if len(models_tested) > 1:
-                            baseline_model = models_tested[-1]  # Typically the most expensive
-                            baseline_cost = analysis["detailed_results"][baseline_model]["summary"].get("avg_crag_cost_per_query", 0)
-
-                            savings_info = []
-                            for model in models_tested[:-1]:
-                                model_cost = analysis["detailed_results"][model]["summary"].get("avg_crag_cost_per_query", 0)
-                                savings = baseline_cost - model_cost
-                                savings_pct = (savings / baseline_cost * 100) if baseline_cost > 0 else 0
-
-                                savings_info.append({
-                                    "Model": model,
-                                    "Savings vs Baseline": f"{savings_pct:.0f}% ({format_cost(savings)}/query)"
-                                })
-
-                            if savings_info:
-                                st.table(savings_info)
-
-                        st.caption(
-                            f"💡 **To run cost analysis:** `python cost_analysis.py` in the app/ directory. "
-                            f"Compares {len(models_tested)} grader models on your evaluation set."
-                        )
-            except Exception as e:
-                st.warning(f"Could not load cost analysis report: {e}")
-        else:
-            st.info(
-                "**Cost Analysis Report Not Found**\n\n"
-                "Generate a cost analysis report to compare grader models:\n"
-                "```bash\ncd app\npython cost_analysis.py\n```\n\n"
-                "This will test different grader models (gpt-5-nano, gpt-4.1-nano, gpt-4o-mini) "
-                "on your evaluation set and recommend the best cost/accuracy tradeoff."
-            )
+        st.markdown("**🔴 Not Relevant (<0.4)**")
+        st.caption("Document doesn't answer the question. Discard and try another query.")
 
         st.divider()
+        st.caption("**Why it matters:** High relevance scores = accurate answers, no hallucinations")
 
-        # === COST PROJECTOR TOOL (v1.5) ===
-        st.subheader("📊 Cost Projector")
-        st.caption("Estimate CRAG costs at different query volumes")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            queries_per_day = st.slider(
-                "Queries per day",
-                min_value=1,
-                max_value=10000,
-                value=1000,
-                step=100,
-                help="Expected daily query volume"
-            )
-
-        with col2:
-            business_days = st.slider(
-                "Business days per year",
-                min_value=100,
-                max_value=365,
-                value=250,
-                help="Working days per year"
-            )
-
-        with col3:
-            model_choice = st.selectbox(
-                "Grader model",
-                options=["gpt-5-nano (cheapest)", "gpt-4.1-nano (balanced)", "gpt-4o-mini (most accurate)"],
-                help="Different models have different cost/accuracy tradeoffs"
-            )
-
-        # Model pricing
-        model_costs = {
-            "gpt-5-nano (cheapest)": 0.000380,
-            "gpt-4.1-nano (balanced)": 0.000450,
-            "gpt-4o-mini (most accurate)": 0.000572,
-        }
-        model_accuracy = {
-            "gpt-5-nano (cheapest)": 87.5,
-            "gpt-4.1-nano (balanced)": 90.0,
-            "gpt-4o-mini (most accurate)": 92.0,
-        }
-
-        # Calculations
-        crag_cost_per_query = model_costs[model_choice]
-        baseline_cost_per_query = 0.000128
-        monthly_queries = queries_per_day * 22  # Assume 22 business days per month
-        annual_queries = queries_per_day * business_days
-
-        baseline_annual = baseline_cost_per_query * annual_queries
-        crag_annual = crag_cost_per_query * annual_queries
-        overhead = crag_annual - baseline_annual
-        overhead_pct = (overhead / baseline_annual * 100) if baseline_annual > 0 else 0
-
-        # Display results
-        st.markdown("### **Yearly Cost Projection**")
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric(
-                "Baseline RAG Cost",
-                f"${baseline_annual:.2f}",
-                help=f"{annual_queries:,} queries/year × {format_cost(baseline_cost_per_query)}/query"
-            )
-
-        with col2:
-            st.metric(
-                "CRAG Cost",
-                f"${crag_annual:.2f}",
-                delta=f"+${overhead:.2f}" if overhead > 0 else f"-${abs(overhead):.2f}",
-                delta_color="inverse" if overhead > 0 else "off",
-                help=f"{annual_queries:,} queries/year × {format_cost(crag_cost_per_query)}/query"
-            )
-
-        with col3:
-            accuracy = model_accuracy[model_choice]
-            st.metric(
-                "Accuracy",
-                f"{accuracy:.0f}%",
-                help=f"{model_choice.split('(')[1].rstrip(')')}"
-            )
-
-        # Break-even analysis
-        st.markdown("### **ROI Analysis**")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("**Cost per Prevented Hallucination**")
-            # Assume baseline has 17.5% hallucination, CRAG reduces to accuracy % of errors
-            baseline_halluc_pct = 0.175
-            crag_halluc_pct = (100 - accuracy) / 100
-            halluc_reduction = (baseline_halluc_pct - crag_halluc_pct) * annual_queries
-            cost_per_prevention = overhead / halluc_reduction if halluc_reduction > 0 else 0
-
-            st.caption(f"${cost_per_prevention:.4f} per prevented hallucination")
-            st.caption(f"*(Assumes {baseline_halluc_pct:.1%} baseline hallucinations)*")
-
-            if cost_per_prevention > 0.005:
-                st.warning(f"⚠️ Cost to prevent each hallucination is high (${cost_per_prevention:.4f})")
-            elif cost_per_prevention > 0.002:
-                st.info(f"✅ Reasonable cost (${cost_per_prevention:.4f})")
-            else:
-                st.success(f"✅ Excellent value (${cost_per_prevention:.4f})")
-
-        with col2:
-            st.markdown("**Break-even Scenarios**")
-            st.caption("CRAG is profitable if each prevented hallucination saves >:")
-
-            scenarios = [
-                (0.0003, "Industry low"),
-                (0.0010, "Support escalation"),
-                (0.0050, "Legal/regulatory issue"),
-                (0.0100, "Reputation damage"),
-            ]
-
-            for threshold, label in scenarios:
-                if cost_per_prevention <= threshold:
-                    st.success(f"${threshold:.4f} ({label})")
-                else:
-                    st.caption(f"${threshold:.4f} ({label})")
-
+    with concept_tabs[1]:
+        st.markdown("**Confidence Score:** How certain is the system in the answer?")
+        st.markdown("Range: **0.0** (very uncertain) to **1.0** (very confident)")
         st.divider()
 
-        # === DATA MANAGEMENT ===
-        st.subheader("🔧 Data Management")
+        st.markdown("**Factors that increase confidence:**")
+        st.caption("✅ High document relevance (good sources)")
+        st.caption("✅ Multiple documents supporting the same answer")
+        st.caption("✅ Clear agreement from the grader")
+        st.caption("✅ Successful retrieval on first try (no corrections needed)")
 
-        col1, col2, col3 = st.columns(3)
+        st.markdown("**Factors that decrease confidence:**")
+        st.caption("⚠️ Low document relevance (weak sources)")
+        st.caption("⚠️ Had to use corrections to find documents")
+        st.caption("⚠️ Fallback mode (no good documents found)")
+        st.caption("⚠️ Answer not verified by document content")
 
-        with col1:
-            if st.button("🔄 Refresh Evaluation Data"):
-                st.cache_data.clear()
-                st.rerun()
+        st.divider()
+        st.caption("**Why it matters:** Low confidence scores = be skeptical of the answer")
 
-        with col2:
-            # Export session data
-            if session_traces:
-                session_export = {
-                    "timestamp": datetime.now().isoformat(),
-                    "session_metrics": {
-                        "total_queries": len(session_traces),
-                        "crag_queries": sum(1 for t in session_traces if hasattr(t, 'mode') and t.mode == "crag"),
-                        "avg_confidence": mean([t.answer_confidence for t in session_traces if hasattr(t, 'answer_confidence')]),
-                        "total_cost_usd": sum(t.total_cost_usd for t in session_traces if hasattr(t, 'total_cost_usd')),
-                    },
-                    "query_count": len(session_traces)
-                }
-                st.download_button(
-                    "📥 Download Session Summary",
-                    data=json.dumps(session_export, indent=2),
-                    file_name=f"crag_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
+    with concept_tabs[2]:
+        st.markdown("**Why These Concepts Matter**")
+        st.divider()
 
-        with col3:
-            st.caption("💾 eval_results.json auto-updates after evaluation runs")
+        st.markdown("**Hallucination Problem:**")
+        st.caption("When an LLM doesn't find good documents, it often makes up plausible-sounding answers. Users can't distinguish right from wrong.")
 
-    else:
-        st.info(
-            "No evaluation results found. Run the evaluation script first:\n\n"
-            "```bash\ncd app\npython eval.py\n```\n\n"
-            "Then reload this page."
+        st.markdown("**CRAG's Solution:**")
+        st.caption("1. Grade documents BEFORE generating answers\n2. Try multiple retrieval strategies if grading fails\n3. Report confidence score so users know when to be skeptical")
+
+        st.markdown("**Real Cost:**")
+        st.caption("Hallucinations cost money:\n- Customer refunds and escalations\n- Brand reputation damage\n- Regulatory/legal liability (in some domains)\n\nCRAG costs pennies to prevent these.")
+
+    st.divider()
+
+    # Correction strategies deep-dive
+    st.subheader("🔧 Correction Strategies (When Initial Retrieval Fails)")
+
+    with st.expander("**Expand:** Rephrase with synonyms", expanded=False):
+        st.markdown("""
+**Idea:** The query might use words that aren't in the documents.
+
+**Example:**
+- Original: "What's your refund policy?"
+- Expanded: "How do I get money back?", "What's the return process?"
+
+**When it works:** Different vocabulary in documents
+        """)
+
+    with st.expander("**Decompose:** Break into sub-questions", expanded=False):
+        st.markdown("""
+**Idea:** Complex questions might be better answered by finding multiple documents.
+
+**Example:**
+- Original: "What's your subscription cancellation policy?"
+- Decomposed:
+  - "How do I cancel my subscription?"
+  - "What happens after I cancel?"
+  - "Can I get a refund?"
+
+**When it works:** Multi-part questions
+        """)
+
+    with st.expander("**Keywords:** Extract key terms", expanded=False):
+        st.markdown("""
+**Idea:** Use specific terms as-is (no synonyms) to find exact mentions.
+
+**Example:**
+- Original: "What's your return policy?"
+- Keywords: ["return", "policy", "refund", "30 days"]
+
+**When it works:** Documents have specific terminology
+        """)
+
+    st.divider()
+
+    # Comparison table
+    st.subheader("📊 Baseline RAG vs CRAG")
+
+    comparison_data = {
+        "Aspect": [
+            "Retrieval",
+            "Quality Gate",
+            "Correction Loop",
+            "Hallucination Rate",
+            "Cost per Query",
+            "Confidence Calibration"
+        ],
+        "Baseline RAG": [
+            "Get top-10 documents",
+            "❌ None",
+            "❌ None",
+            "~17.5% (high)",
+            "$0.001–0.003",
+            "❌ Overconfident"
+        ],
+        "CRAG": [
+            "Get top-10 documents",
+            "✅ Grade each document",
+            "✅ Retry with corrections",
+            "~3-5% (low)",
+            "$0.002–0.005",
+            "✅ Better calibrated"
+        ]
+    }
+
+    st.dataframe(comparison_data, use_container_width=True, hide_index=True)
+
+# ============================================================================
+# TAB 4: Settings - Configuration & KB Management
+# ============================================================================
+
+with tab_settings:
+    st.header("⚙️ Settings")
+    st.caption("Configure your knowledge base and system parameters")
+
+    # Knowledge Base Management
+    st.subheader("📚 Knowledge Base")
+
+    col1, col2 = st.columns([1, 1], gap="medium")
+
+    with col1:
+        st.markdown("**Select Knowledge Base:**")
+        kb_choice = st.radio(
+            "Knowledge Base Mode:",
+            options=["📄 Default FAQ", "✏️ Custom Documents"],
+            key="kb_selector_settings",
+            help="Choose which documents to use for retrieval",
+            index=0 if st.session_state.kb_mode == "default" else 1,
+            label_visibility="collapsed"
         )
+
+        st.session_state.kb_mode = "default" if kb_choice.startswith("📄") else "custom"
+
+    with col2:
+        st.markdown("**Current Status:**")
+        if st.session_state.kb_mode == "default":
+            st.success(f"📄 Using Default FAQ ({len(DEFAULT_DOCUMENTS)} documents)")
+        else:
+            st.info("✏️ Using Custom Documents")
+
+    st.divider()
+
+    # Handle Default FAQ mode
+    if st.session_state.kb_mode == "default":
+        st.markdown("### 📖 Default FAQ Documents")
+
+        with st.expander(f"View all documents ({len(DEFAULT_DOCUMENTS)})", expanded=False):
+            for i, d in enumerate(DEFAULT_DOCUMENTS, 1):
+                with st.container(border=True):
+                    st.caption(f"**Document {i}**")
+                    st.caption(d[:200] + ("..." if len(d) > 200 else ""))
+
+    else:
+        # Custom Documents mode
+        st.markdown("### 📤 Upload Custom Documents")
+
+        # Phase 4: Enhanced help text with better UX
+        with st.expander("📖 Format Guide", expanded=False):
+            st.markdown("""
+**Paste documents separated by blank lines:**
+- Each blank line creates a document boundary
+- Each paragraph becomes one searchable document
+- Better: 5-10 documents with good content
+- Avoid: Very long single document or many tiny documents
+
+**Example:**
+```
+Return Policy: We accept returns within 30 days of purchase.
+Items must be in original condition.
+
+Shipping Information: Standard shipping takes 5-7 business days.
+Express shipping available for $10 extra.
+
+[Each block above = one document]
+```
+
+**Tips:**
+- ✅ Paste documents exactly as they appear in your system
+- ✅ Include document titles/headers for clarity
+- ✅ Separate by blank lines
+- ❌ Don't paste HTML or formatting codes
+            """)
+
+        custom_docs_text = st.text_area(
+            "Paste your documents:",
+            value="",
+            height=250,
+            help="Paste documents separated by blank lines",
+            placeholder="Paste documents here. Separate with blank lines.",
+        )
+
+        # Phase 3 & 4: Live validation with better visual feedback
+        if custom_docs_text.strip():
+            detected_docs = [d.strip() for d in custom_docs_text.split("\n\n") if d.strip()]
+            doc_count = len(detected_docs)
+
+            # Create validation feedback
+            validation_issues = []
+            validation_info = []
+
+            if doc_count == 0:
+                validation_issues.append("❌ No documents detected")
+            elif doc_count == 1:
+                validation_info.append("📌 Single document detected (works, but multiple docs better for retrieval)")
+            elif doc_count <= 10:
+                validation_info.append(f"✅ **{doc_count} documents** — optimal range")
+            else:
+                validation_issues.append(f"⚠️ {doc_count} documents (large KB — may be slower/more expensive)")
+
+            # Check for very short documents
+            short_docs = [i+1 for i, d in enumerate(detected_docs) if len(d.split()) < 10]
+            if short_docs:
+                validation_issues.append(f"⚠️ Docs {short_docs} are very short (<10 words)")
+            else:
+                total_words = sum(len(d.split()) for d in detected_docs)
+                avg_words = total_words // doc_count if doc_count > 0 else 0
+                validation_info.append(f"📊 Average doc length: {avg_words} words")
+
+            # Display validation feedback
+            if validation_issues:
+                for issue in validation_issues:
+                    st.warning(issue) if "❌" in issue else st.info(issue)
+
+            if validation_info:
+                st.caption("")  # Spacer
+                for info in validation_info:
+                    st.caption(info)
+
+            # Live preview with document count
+            if doc_count > 0:
+                preview_cols = st.columns([2, 1])
+                with preview_cols[0]:
+                    if st.checkbox(f"📋 Preview all {doc_count} documents", key="show_preview", value=False):
+                        st.divider()
+                        for i, doc in enumerate(detected_docs, 1):
+                            with st.container(border=True):
+                                col_title, col_length = st.columns([3, 1])
+                                with col_title:
+                                    st.caption(f"**Document {i}**")
+                                with col_length:
+                                    word_count = len(doc.split())
+                                    st.caption(f"_{word_count} words_")
+
+                                preview_text = doc[:200] + ("..." if len(doc) > 200 else "")
+                                st.caption(preview_text)
+
+            docs = detected_docs
+        else:
+            docs = []
+            st.caption("💡 Paste documents above to get started")
+
+        # Phase 4: Enhanced apply button with accessibility
+        if docs:
+            button_label = f"📤 Apply {len(docs)} Document(s)"
+
+            col_btn1, col_btn2 = st.columns([2, 1])
+            with col_btn1:
+                if st.button(button_label, key="apply_docs_settings", use_container_width=True, type="primary"):
+                    with st.spinner(f"Indexing {len(docs)} document(s)…"):
+                        try:
+                            new_store = VectorStore()
+                            new_store.add_documents(docs)
+                            st.session_state.vector_store = new_store
+                            st.success(f"✅ Successfully indexed {len(docs)} document(s)!")
+                            st.session_state.kb_mode = "custom"
+                            st.session_state.vector_store = new_store
+                            st.info("📍 Custom KB is now active. Use the Query tab to test.")
+                        except Exception as e:
+                            st.error(f"❌ Error indexing documents: {str(e)}")
+            with col_btn2:
+                st.caption(f"✓ Will index {len(docs)} docs")
+        else:
+            st.info("📍 Enter documents above to activate the Apply button")
+
+    st.divider()
+
+    # System Parameters with Phase 4: Accessibility and help text
+    st.subheader("⚙️ System Parameters")
+    st.caption("Current configuration settings (fixed in demo mode)")
+
+    # Phase 4: Interactive help for parameters
+    param_help = st.expander("❓ What do these parameters mean?", expanded=False)
+    with param_help:
+        st.markdown("""
+**Relevance Threshold (0.70):** Documents scoring below 70% relevance are rejected as unhelpful.
+- Lower value = accept more documents (retrieves more, but lower quality)
+- Higher value = accept fewer documents (stricter filtering)
+
+**Top-K Documents (10):** Retrieve up to 10 most similar documents from your knowledge base.
+- More documents = higher chance of finding answer, but slower and more expensive
+- Fewer documents = faster, but might miss relevant information
+
+**Max Retrieval Attempts (3):** Try up to 3 correction strategies (Expand, Decompose, Keywords) if initial retrieval fails.
+- More attempts = higher chance of finding answer with corrections
+- Fewer attempts = faster, but might give up too early
+
+**Confidence Threshold (0.40):** Answers scoring below 40% confidence get a low-confidence warning.
+- Lower threshold = warn on fewer answers (risk: users trust uncertain answers)
+- Higher threshold = warn on more answers (risk: users lose trust in good answers)
+        """)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric(
+            "Relevance Threshold",
+            "0.70",
+            help="Documents must score ≥70% relevant to be used. Filters out weak sources."
+        )
+        st.metric(
+            "Max Retrieval Attempts",
+            "3",
+            help="Try up to 3 different query reformulations if first retrieval fails"
+        )
+
+    with col2:
+        st.metric(
+            "Top-K Documents",
+            "10",
+            help="Retrieve top 10 most similar documents from knowledge base per query"
+        )
+        st.metric(
+            "Confidence Threshold",
+            "0.40",
+            help="Flag answers as low-confidence if below 40% certainty"
+        )
+
+    st.divider()
+
+    # About
+    st.subheader("ℹ️ About CRAG")
+    st.markdown("""
+**Corrective Retrieval-Augmented Generation (CRAG)** is a technique to reduce hallucinations in RAG systems.
+
+**Key Features:**
+- 🛡️ Quality gate prevents hallucinations
+- 🔄 Correction loop tries multiple strategies
+- ✅ Answer verification
+- 💰 Cost-benefit analysis
+- 📊 Confidence calibration
+
+**Learn More:**
+- [GitHub Repository](https://github.com/leo-cherupushpam/corrective-rag)
+- [Research Paper](https://arxiv.org/abs/2401.15884)
+    """)
+
+    st.divider()
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
